@@ -132,7 +132,7 @@ class Mavo_Img_Srcset {
 		// Strip alignment classes, then add aligncenter.
 		$class = preg_replace( '/\balign(?:center|left|right|none)\b\s*/', '', $img->getAttribute( 'class' ) );
 		$class = trim( preg_replace( '/\s+/', ' ', $class ) );
-		$new_img->setAttribute( 'class', trim( $class . ' aligncenter' ) );
+		$new_img->setAttribute( 'class', trim( $class . ' aligncenter mavo-img-tag' ) );
 
 		$new_img->setAttribute( 'width', '960' );
 		if ( $h960 > 0 ) {
