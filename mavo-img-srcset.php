@@ -153,21 +153,35 @@ class Mavo_Img_Srcset {
 		$anchor = $is_centered_p ? $parent : $img;
 
 		// --- Detect <em> caption immediately following the anchor ---
+		// Check img's next sibling first (covers em inside a centered <p> alongside the img),
+		// then fall back to the anchor's next sibling (covers em outside the <p>).
 
-		$em_node         = null;
+		$em_node          = null;
 		$whitespace_nodes = [];
 
-		$sibling = $anchor->nextSibling;
-		while ( $sibling !== null ) {
-			if ( $sibling instanceof DOMText && trim( $sibling->nodeValue ) === '' ) {
-				$whitespace_nodes[] = $sibling;
-				$sibling            = $sibling->nextSibling;
+		foreach ( [ $img->nextSibling, $anchor->nextSibling ] as $start ) {
+			if ( $start === null ) {
 				continue;
 			}
-			if ( $sibling instanceof DOMElement && $sibling->nodeName === 'em' ) {
-				$em_node = $sibling;
+			$sibling           = $start;
+			$candidate_ws      = [];
+			$candidate_em      = null;
+			while ( $sibling !== null ) {
+				if ( $sibling instanceof DOMText && trim( $sibling->nodeValue ) === '' ) {
+					$candidate_ws[] = $sibling;
+					$sibling        = $sibling->nextSibling;
+					continue;
+				}
+				if ( $sibling instanceof DOMElement && $sibling->nodeName === 'em' ) {
+					$candidate_em = $sibling;
+				}
+				break;
 			}
-			break;
+			if ( $candidate_em !== null ) {
+				$em_node          = $candidate_em;
+				$whitespace_nodes = $candidate_ws;
+				break;
+			}
 		}
 
 		// --- Build output node ---
