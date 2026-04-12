@@ -74,8 +74,10 @@ class Mavo_Img_Srcset {
 		}
 		$img_list = array_reverse( $img_list );
 
+		$post_id = (int) get_the_ID();
+
 		foreach ( $img_list as $img ) {
-			$this->process_img( $img, $doc );
+			$this->process_img( $img, $doc, $post_id );
 		}
 
 		// Serialize only mavo-root's children to avoid the wrapper div.
@@ -88,7 +90,21 @@ class Mavo_Img_Srcset {
 		return $html;
 	}
 
-	private function process_img( DOMElement $img, DOMDocument $doc ): void {
+	private function get_fallback_alt( int $post_id ): string {
+		static $cache = [];
+		if ( array_key_exists( $post_id, $cache ) ) {
+			return $cache[ $post_id ];
+		}
+		global $wpdb;
+		$keyword = $wpdb->get_var( $wpdb->prepare(
+			"SELECT primary_focus_keyword FROM {$wpdb->prefix}yoast_indexable WHERE object_id = %d LIMIT 1",
+			$post_id
+		) );
+		$cache[ $post_id ] = $keyword !== null ? (string) $keyword : '';
+		return $cache[ $post_id ];
+	}
+
+	private function process_img( DOMElement $img, DOMDocument $doc, int $post_id ): void {
 		// --- Skip conditions ---
 
 		$width_attr = $img->getAttribute( 'width' );
@@ -143,7 +159,11 @@ class Mavo_Img_Srcset {
 			$webp_960 . ' 960w, ' . $webp_640 . ' 640w, ' . $webp_480 . ' 480w'
 		);
 		$new_img->setAttribute( 'sizes', '(max-width: 960px) 100vw, 960px' );
-		$new_img->setAttribute( 'alt', $img->getAttribute( 'alt' ) );
+		$alt = $img->getAttribute( 'alt' );
+		if ( $alt === '' && $post_id > 0 ) {
+			$alt = $this->get_fallback_alt( $post_id );
+		}
+		$new_img->setAttribute( 'alt', $alt );
 
 		// Strip alignment classes, then add aligncenter.
 		$class = preg_replace( '/\balign(?:center|left|right|none)\b\s*/', '', $img->getAttribute( 'class' ) );
