@@ -1,0 +1,13 @@
+figure.wp-picture-figure {
+    display: block;
+    margin: auto;
+    text-align: center;
+}
+
+figure.wp-picture-figure figcaption {
+    font-size: .875em;
+    font-style: italic;
+    color: #666;
+    margin-top: .5em;
+    margin-bottom: 1em;
+}
