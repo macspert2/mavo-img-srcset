@@ -15,10 +15,25 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Mavo_Img_Srcset {
 
 	public function __construct() {
-		add_filter( 'the_content',             [ $this, 'transform' ], 9 );
-		add_filter( 'post_thumbnail_html',     [ $this, 'transform' ], 9 );
-		add_filter( 'wp_get_attachment_image', [ $this, 'transform' ], 9 );
-		add_action( 'wp_enqueue_scripts',      [ $this, 'enqueue_styles' ] );
+		add_filter( 'the_content',                    [ $this, 'transform' ], 9 );
+		add_filter( 'post_thumbnail_html',            [ $this, 'transform' ], 9 );
+		add_filter( 'wp_get_attachment_image',        [ $this, 'transform' ], 9 );
+		add_filter( 'wp_get_attachment_image_attributes', [ $this, 'add_fetchpriority' ], 10, 2 );
+		add_action( 'wp_enqueue_scripts',             [ $this, 'enqueue_styles' ] );
+	}
+
+	public function add_fetchpriority( array $attr, WP_Post $attachment ): array {
+		static $count = 0;
+		if ( ! ( is_home() || is_front_page() ) ) {
+			return $attr;
+		}
+		if ( isset( $attr['class'] ) && strpos( $attr['class'], 'wp-post-image' ) !== false ) {
+			$count++;
+			if ( $count === 1 ) {
+				$attr['fetchpriority'] = 'high';
+			}
+		}
+		return $attr;
 	}
 
 	public function enqueue_styles(): void {
