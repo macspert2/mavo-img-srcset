@@ -31,6 +31,7 @@ class Mavo_Img_Srcset {
 			$count++;
 			if ( $count === 1 ) {
 				$attr['fetchpriority'] = 'high';
+				$attr['loading']       = 'eager';
 			}
 		}
 		return $attr;
@@ -153,7 +154,13 @@ class Mavo_Img_Srcset {
 		if ( $h960 > 0 ) {
 			$new_img->setAttribute( 'height', (string) $h960 );
 		}
-		$new_img->setAttribute( 'loading', 'lazy' );
+		$fetchpriority = $img->getAttribute( 'fetchpriority' );
+		if ( $fetchpriority !== '' ) {
+			$new_img->setAttribute( 'fetchpriority', $fetchpriority );
+			$new_img->setAttribute( 'loading', 'eager' );
+		} else {
+			$new_img->setAttribute( 'loading', 'lazy' );
+		}
 		$new_img->setAttribute( 'decoding', 'async' );
 
 		// --- Determine anchor node ---
