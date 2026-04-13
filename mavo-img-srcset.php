@@ -242,6 +242,9 @@ class Mavo_Img_Srcset {
 
 		// --- Replace anchor ---
 
+		if ( $anchor->parentNode === null ) {
+			return;
+		}
 		$anchor->parentNode->insertBefore( $output, $anchor );
 		$anchor->parentNode->removeChild( $anchor );
 
