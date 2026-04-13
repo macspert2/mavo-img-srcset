@@ -47,7 +47,7 @@ class Mavo_Img_Srcset {
 	}
 
 	public function transform( string $content ): string {
-		if ( strpos( $content, '<img' ) === false ) {
+		if ( is_admin() || strpos( $content, '<img' ) === false ) {
 			return $content;
 		}
 
@@ -134,13 +134,13 @@ class Mavo_Img_Srcset {
 		$filename    = pathinfo( $src, PATHINFO_FILENAME );
 
 		$h960 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 960 * $orig_height / $orig_width )
+			? (int) ( 960 * $orig_height / $orig_width )
 			: $orig_height;
 		$h640 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 640 * $orig_height / $orig_width )
+			? (int) ( 640 * $orig_height / $orig_width )
 			: 0;
 		$h480 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 480 * $orig_height / $orig_width )
+			? (int) ( 480 * $orig_height / $orig_width )
 			: 0;
 
 		$src_960 = $src;
