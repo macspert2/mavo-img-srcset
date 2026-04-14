@@ -50,7 +50,14 @@ class Mavo_Img_Srcset {
 		if ( is_admin() || strpos( $content, '<img' ) === false ) {
 			return $content;
 		}
+		try {
+			return $this->do_transform( $content );
+		} catch ( \Throwable $e ) {
+			return $content;
+		}
+	}
 
+	private function do_transform( string $content ): string {
 		$doc = new DOMDocument();
 		libxml_use_internal_errors( true );
 		$doc->loadHTML(
@@ -82,6 +89,9 @@ class Mavo_Img_Srcset {
 
 		// Serialize only mavo-root's children to avoid the wrapper div.
 		$root = $xpath->query( '//div[@id="mavo-root"]' )->item( 0 );
+		if ( $root === null ) {
+			return $content;
+		}
 		$html = '';
 		foreach ( $root->childNodes as $child ) {
 			$html .= $doc->saveHTML( $child );
