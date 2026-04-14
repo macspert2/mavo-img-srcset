@@ -20,6 +20,40 @@ class Mavo_Img_Srcset {
 		add_filter( 'wp_get_attachment_image',        [ $this, 'transform' ], 9 );
 		add_filter( 'wp_get_attachment_image_attributes', [ $this, 'add_fetchpriority' ], 10, 2 );
 		add_action( 'wp_enqueue_scripts',             [ $this, 'enqueue_styles' ] );
+		add_filter( 'wp_generate_attachment_metadata', [ $this, 'generate_webp_for_attachment' ], 10, 2 );
+	}
+
+	public function generate_webp_for_attachment( array $metadata, int $attachment_id ): array {
+		if ( get_post_mime_type( $attachment_id ) !== 'image/jpeg' ) {
+			return $metadata;
+		}
+
+		$file = get_attached_file( $attachment_id );
+		if ( ! $file || ! file_exists( $file ) ) {
+			return $metadata;
+		}
+
+		$files = [ $file ];
+
+		if ( ! empty( $metadata['sizes'] ) ) {
+			$dir = dirname( $file );
+			foreach ( $metadata['sizes'] as $size ) {
+				$size_path = $dir . '/' . $size['file'];
+				if ( file_exists( $size_path ) ) {
+					$files[] = $size_path;
+				}
+			}
+		}
+
+		foreach ( $files as $src ) {
+			exec( sprintf(
+				'cwebp -q 82 -metadata icc %s -o %s 2>/dev/null',
+				escapeshellarg( $src ),
+				escapeshellarg( $src . '.webp' )
+			) );
+		}
+
+		return $metadata;
 	}
 
 	public function add_fetchpriority( array $attr, $attachment ): array {
