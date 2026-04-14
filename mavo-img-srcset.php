@@ -22,7 +22,10 @@ class Mavo_Img_Srcset {
 		add_action( 'wp_enqueue_scripts',             [ $this, 'enqueue_styles' ] );
 	}
 
-	public function add_fetchpriority( array $attr, WP_Post $attachment ): array {
+	public function add_fetchpriority( array $attr, $attachment ): array {
+		if ( ! $attachment instanceof WP_Post ) {
+			return $attr;
+		}
 		static $count = 0;
 		if ( ! ( is_home() || is_front_page() ) ) {
 			return $attr;
