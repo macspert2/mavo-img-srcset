@@ -60,6 +60,12 @@ class Mavo_Img_Srcset {
 		if ( ! $attachment instanceof WP_Post ) {
 			return $attr;
 		}
+
+		// Ensure sizes is always present when srcset is set.
+		if ( ! empty( $attr['srcset'] ) && empty( $attr['sizes'] ) ) {
+			$attr['sizes'] = '(max-width: 960px) 100vw, 960px';
+		}
+
 		static $count = 0;
 		if ( ! ( is_home() || is_front_page() ) ) {
 			return $attr;
