@@ -15,6 +15,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/includes/class-mavo-webp-files.php';
 require_once __DIR__ . '/includes/class-mavo-webp-urls.php';
 
+if ( is_admin() ) {
+	require_once __DIR__ . '/includes/class-mavo-alt-admin.php';
+	Mavo_Alt_Admin::register();
+}
+
 // Deleting an attachment now removes its recorded sizes, so the sidecars have to
 // go with them or every deletion leaves orphans behind.
 add_filter( 'wp_delete_file', [ 'Mavo_Webp_Files', 'delete_sidecar' ] );
@@ -196,6 +201,25 @@ class Mavo_Img_Srcset {
 	 * attribute this method does not name survives untouched.
 	 */
 	private function process_img( DOMElement $img, DOMDocument $doc ): void {
+		// --- Alt: the media library's own, never an invented one ---
+		//
+		// Before the guards below, because alt is about what an image shows, not
+		// what format it is in: a PNG needs a description as much as a JPEG does.
+		//
+		// The media library wins over whatever the editor typed into the content,
+		// which is the opposite of the previous order. Tools → Image alt text is
+		// where alt is curated now, with the surrounding headings visible; text
+		// written there has to be able to reach the page, and it could not while
+		// a stale alt baked into post_content took precedence. Content alt is
+		// still the fallback when the library has nothing.
+
+		$attachment_id = $this->attachment_id_from_class( $img->getAttribute( 'class' ) );
+		$media_alt     = $this->media_alt( $attachment_id );
+
+		if ( $media_alt !== '' ) {
+			$img->setAttribute( 'alt', $media_alt );
+		}
+
 		// --- Skip conditions ---
 		//
 		// The width test used to sit here and gate everything, which is why an
@@ -220,16 +244,6 @@ class Mavo_Img_Srcset {
 		$ext = strtolower( pathinfo( $src, PATHINFO_EXTENSION ) );
 		if ( ! in_array( $ext, [ 'jpg', 'jpeg' ], true ) ) {
 			return;
-		}
-
-		// --- Alt: the media library's own, never an invented one ---
-
-		if ( trim( $img->getAttribute( 'alt' ) ) === '' ) {
-			$alt = $this->media_alt( $this->attachment_id_from_class( $img->getAttribute( 'class' ) ) );
-
-			if ( $alt !== '' ) {
-				$img->setAttribute( 'alt', $alt );
-			}
 		}
 
 		// --- Alignment classes: strip whatever was chosen, centre everything ---

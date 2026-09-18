@@ -82,17 +82,29 @@ $out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="x"> <strong
 ok( ! str_contains( $out, 'figure' ), 'a following element that is not <em> does not make a figure' );
 
 /* ---- alt comes from the media library, never invented -------------------- */
-$GLOBALS['MEDIA_ALT'] = [ 7 => 'Le Lac Noir, Durmitor' ];
+// The library now WINS over content alt: Tools → Image alt text writes there,
+// and text written there has to be able to reach the page.
+// Id 70, not 7: an earlier assertion above already looked 7 up while the
+// stub was empty, and media_alt() caches per request.
+$GLOBALS['MEDIA_ALT'] = [ 70 => 'Le Lac Noir, Durmitor' ];
 
-ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-7">' ), 'alt="Le Lac Noir, Durmitor"' ),
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-70">' ), 'alt="Le Lac Noir, Durmitor"' ),
 	'an empty alt is filled from the attachment\'s own alt text' );
-ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="real" class="wp-image-7">' ), 'alt="real"' ),
-	'an alt already in the content is never overwritten' );
-ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="   " class="wp-image-7">' ), 'alt="Le Lac Noir, Durmitor"' ),
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="stale" class="wp-image-70">' ), 'alt="Le Lac Noir, Durmitor"' ),
+	'the media library overrides an alt baked into the content' );
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="kept" class="wp-image-99">' ), 'alt="kept"' ),
+	'content alt survives when the library has nothing' );
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="   " class="wp-image-70">' ), 'alt="Le Lac Noir, Durmitor"' ),
 	'a whitespace-only alt counts as empty' );
 
 $out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-99">' );
 ok( str_contains( $out, 'alt=""' ), 'no media alt -> alt stays empty, which is correct for a decorative image' );
+
+// A PNG gets no responsive treatment, but it still gets its description.
+ok( str_contains( t( '<img src="' . $U . '/a.png" width="960" height="720" alt="" class="wp-image-70">' ), 'alt="Le Lac Noir, Durmitor"' ),
+	'alt reaches a PNG too — it runs before the format guards' );
+ok( ! str_contains( t( '<img src="' . $U . '/a.png" width="960" height="720" class="wp-image-70">' ), 'mavo-img-tag' ),
+	'...without the PNG gaining any of the other editorial treatment' );
 ok( ! str_contains( $out, 'wp-image-99"' ) || ! preg_match( '/alt="[^"]+"/', $out ),
 	'nothing is invented to fill the gap' );
 
