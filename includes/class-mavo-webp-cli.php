@@ -281,6 +281,13 @@ final class Mavo_Webp_CLI {
 	 * [--dry-run]
 	 * : Report what would be recorded without writing anything.
 	 *
+	 * [--widths=<list>]
+	 * : Record only these widths, comma separated. The library holds around nine
+	 * intermediates per image, most of them from themes and settings long gone;
+	 * recording only the widths the site actually serves keeps both the metadata
+	 * and the rendered srcset to a sensible length. Every width is reported
+	 * either way.
+	 *
 	 * [--attachment=<id>]
 	 * : Restrict the run to a single attachment.
 	 *
@@ -290,7 +297,8 @@ final class Mavo_Webp_CLI {
 	 * ## EXAMPLES
 	 *
 	 *     wp mavo-webp repair-sizes --dry-run
-	 *     wp mavo-webp repair-sizes
+	 *     wp mavo-webp repair-sizes --widths=960,768,640,480 --dry-run
+	 *     wp mavo-webp repair-sizes --widths=960,768,640,480
 	 *
 	 * @subcommand repair-sizes
 	 */
@@ -298,15 +306,26 @@ final class Mavo_Webp_CLI {
 		$dry   = (bool) ( $assoc['dry-run'] ?? false );
 		$limit = isset( $assoc['limit'] ) ? max( 1, (int) $assoc['limit'] ) : PHP_INT_MAX;
 
+		$widths = [];
+
+		if ( ! empty( $assoc['widths'] ) ) {
+			$widths = array_flip( array_filter( array_map( 'intval', explode( ',', (string) $assoc['widths'] ) ) ) );
+
+			if ( ! $widths ) {
+				WP_CLI::error( '--widths needs a comma-separated list of numbers.' );
+			}
+		}
+
 		WP_CLI::log( 'Indexing attachment files…' );
 		$taken = Mavo_Webp_Files::attached_paths();
 		WP_CLI::log( sprintf( '%d registered file(s) indexed.', count( $taken ) ) );
 
-		$c        = [ 'seen' => 0, 'with_orphans' => 0, 'sizes' => 0, 'unchanged' => 0 ];
+		$c        = [ 'seen' => 0, 'with_orphans' => 0, 'sizes' => 0, 'unchanged' => 0, 'skipped_width' => 0 ];
 		$spread   = [];
+		$seen_w   = [];   // every width found on disk, recorded or not
 		$listings = [];   // directory => scandir result, reused across neighbours
 
-		$work = static function ( int $id ) use ( &$c, &$spread, &$listings, $taken, $dry ): void {
+		$work = static function ( int $id ) use ( &$c, &$spread, &$seen_w, &$listings, $taken, $dry, $widths ): void {
 			$c['seen']++;
 
 			$file = get_attached_file( $id );
@@ -323,6 +342,16 @@ final class Mavo_Webp_CLI {
 			}
 
 			$found = Mavo_Webp_Files::orphan_sizes( $id, $taken, $listings[ $dir ] );
+
+			foreach ( $found as $key => $size ) {
+				$w            = (int) $size['width'];
+				$seen_w[ $w ] = ( $seen_w[ $w ] ?? 0 ) + 1;
+
+				if ( $widths && ! isset( $widths[ $w ] ) ) {
+					unset( $found[ $key ] );
+					$c['skipped_width']++;
+				}
+			}
 
 			if ( ! $found ) {
 				$c['unchanged']++;
@@ -352,6 +381,18 @@ final class Mavo_Webp_CLI {
 		WP_CLI::log( sprintf( '  with unrecorded resized files: %d', $c['with_orphans'] ) );
 		WP_CLI::log( sprintf( '  already complete             : %d', $c['unchanged'] ) );
 		WP_CLI::log( sprintf( '%s: %d', $dry ? 'Sizes that would be recorded  ' : 'Sizes recorded                ', $c['sizes'] ) );
+
+		if ( $c['skipped_width'] > 0 ) {
+			WP_CLI::log( sprintf( '  left unrecorded (--widths)   : %d', $c['skipped_width'] ) );
+		}
+
+		arsort( $seen_w );
+		WP_CLI::log( '' );
+		WP_CLI::log( 'Widths found on disk but absent from metadata:' );
+
+		foreach ( $seen_w as $w => $count ) {
+			WP_CLI::log( sprintf( '  %5dw : %7d%s', $w, $count, ( $widths && ! isset( $widths[ $w ] ) ) ? '   (skipped)' : '' ) );
+		}
 
 		ksort( $spread );
 
