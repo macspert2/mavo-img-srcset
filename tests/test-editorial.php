@@ -15,11 +15,17 @@ function plugin_dir_url( $f )  { return '/p/'; }
 function plugin_dir_path( $f ) { return __DIR__ . '/'; }
 function is_admin() { return false; }
 function is_feed()  { return $GLOBALS['IS_FEED'] ?? false; }
-function get_post_meta( $id, $key, $single = false ) { return $GLOBALS['MEDIA_ALT'][ $id ] ?? ''; }
+function get_post_meta( $id, $key, $single = false ) { return $GLOBALS['MEDIA_ALT'][ $id ][ $key ] ?? ''; }
+function pll_current_language( $f = 'slug' ) { return $GLOBALS['LANG'] ?? 'fr'; }
+function pll_default_language( $f = 'slug' ) { return 'fr'; }
+function pll_languages_list( $a = [] ) { return [ 'fr', 'en', 'de' ]; }
+function add_management_page( ...$a ) {}
+function __( $t, $d = '' ) { return $t; }
 function set_url_scheme( $u, $s ) { return preg_replace( '#^https?:#', $s . ':', $u ); }
 function wp_upload_dir() { return [ 'baseurl' => 'https://example.com/wp-content/uploads', 'basedir' => '/nonexistent', 'error' => false ]; }
 
-$GLOBALS['MEDIA_ALT'] = [];   // attachment id => alt stored in the media library
+$GLOBALS['MEDIA_ALT'] = [];
+unset( $GLOBALS['LANG'] );   // attachment id => alt stored in the media library
 $GLOBALS['IS_FEED']   = false;
 
 require_once __DIR__ . '/../mavo-img-srcset.php';
@@ -86,7 +92,7 @@ ok( ! str_contains( $out, 'figure' ), 'a following element that is not <em> does
 // and text written there has to be able to reach the page.
 // Id 70, not 7: an earlier assertion above already looked 7 up while the
 // stub was empty, and media_alt() caches per request.
-$GLOBALS['MEDIA_ALT'] = [ 70 => 'Le Lac Noir, Durmitor' ];
+$GLOBALS['MEDIA_ALT'] = [ 70 => [ '_wp_attachment_image_alt' => 'Le Lac Noir, Durmitor' ] ];
 
 ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-70">' ), 'alt="Le Lac Noir, Durmitor"' ),
 	'an empty alt is filled from the attachment\'s own alt text' );
@@ -110,6 +116,28 @@ ok( ! str_contains( $out, 'wp-image-99"' ) || ! preg_match( '/alt="[^"]+"/', $ou
 
 $out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="">' );
 ok( str_contains( $out, 'alt=""' ), 'an image with no wp-image class keeps an empty alt' );
+$GLOBALS['MEDIA_ALT'] = [];
+unset( $GLOBALS['LANG'] );
+
+/* ---- translations ------------------------------------------------------- */
+// Stored on the same attachment; Polylang media translation is not enabled here.
+$GLOBALS['MEDIA_ALT'] = [ 71 => [
+	'_wp_attachment_image_alt' => 'Le Lac Noir',
+	'_mavo_alt_de'             => 'Der Schwarze See',
+] ];
+
+$img = '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-71">';
+
+$GLOBALS['LANG'] = 'de';
+ok( str_contains( t( $img ), 'alt="Der Schwarze See"' ), 'a German page gets the German alt' );
+
+$GLOBALS['LANG'] = 'en';
+ok( str_contains( t( $img ), 'alt="Le Lac Noir"' ),
+	'an untranslated language falls back to the default — alt="" would tell a screen reader to skip the photo' );
+
+$GLOBALS['LANG'] = 'fr';
+ok( str_contains( t( $img ), 'alt="Le Lac Noir"' ), 'the default language reads the media library key' );
+unset( $GLOBALS['LANG'] );
 $GLOBALS['MEDIA_ALT'] = [];
 
 /* ---- skip conditions, unchanged ------------------------------------------ */

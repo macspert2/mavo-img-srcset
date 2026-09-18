@@ -15,8 +15,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/includes/class-mavo-webp-files.php';
 require_once __DIR__ . '/includes/class-mavo-webp-urls.php';
 
+// Loaded everywhere: the front end reads the per-language alt keys this class
+// defines. Only the screen itself is admin-only.
+require_once __DIR__ . '/includes/class-mavo-alt-admin.php';
+
 if ( is_admin() ) {
-	require_once __DIR__ . '/includes/class-mavo-alt-admin.php';
 	Mavo_Alt_Admin::register();
 }
 
@@ -150,21 +153,26 @@ class Mavo_Img_Srcset {
 	}
 
 	/**
-	 * The alt text stored against the attachment itself, or '' if there is none.
+	 * The alt text stored against the attachment, in the language being read.
 	 *
-	 * This replaces a fallback that used the post's Yoast focus keyword. That
+	 * This replaced a fallback that used the post's Yoast focus keyword. That
 	 * keyword is one string per post, so every un-alted image in an article was
 	 * given the same text: measured across 62 pages, 1620 of 2295 content images
 	 * — 71% — shared their alt with another image on the same page. For someone
 	 * using a screen reader that is a dozen images all announcing "week-end à
 	 * Paris en famille"; to a search engine it is the textbook description of
-	 * keyword-stuffed alt text. It also meant querying a third-party plugin's
-	 * private table on the front end.
+	 * keyword-stuffed alt text.
 	 *
-	 * Where the media library has no alt either, the attribute is left empty on
-	 * purpose. alt="" is the correct markup for an image with nothing useful to
-	 * say about it: assistive technology skips it, which is better than reading
-	 * out a keyword.
+	 * Translations live on the same attachment under their own keys, written by
+	 * Tools → Image alt text. An empty translation falls back to the default
+	 * language rather than to nothing: alt="" tells assistive technology to skip
+	 * the image entirely, which is the wrong answer for a photograph that has
+	 * simply not been translated yet, and a French description is what every
+	 * language already gets today. Filter mavo_alt_fallback_to_default to
+	 * disagree.
+	 *
+	 * Where neither exists the attribute is left as it was — an empty alt is the
+	 * correct markup for an image with nothing useful to say about it.
 	 */
 	private function media_alt( int $attachment_id ): string {
 		static $cache = [];
@@ -173,11 +181,47 @@ class Mavo_Img_Srcset {
 			return '';
 		}
 
-		if ( ! array_key_exists( $attachment_id, $cache ) ) {
-			$cache[ $attachment_id ] = trim( (string) get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) );
+		$lang = $this->current_language();
+		$key  = $attachment_id . '|' . $lang;
+
+		if ( array_key_exists( $key, $cache ) ) {
+			return $cache[ $key ];
 		}
 
-		return $cache[ $attachment_id ];
+		$alt = '';
+
+		if ( class_exists( 'Mavo_Alt_Admin' ) ) {
+			$alt = Mavo_Alt_Admin::stored_alt( $attachment_id, $lang );
+
+			if ( $alt === '' && apply_filters( 'mavo_alt_fallback_to_default', true, $attachment_id, $lang ) ) {
+				$alt = Mavo_Alt_Admin::stored_alt( $attachment_id, Mavo_Alt_Admin::default_language() );
+			}
+		} else {
+			// The admin class only loads in the admin; on the front end read the
+			// one key WordPress itself defines.
+			$alt = trim( (string) get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) );
+		}
+
+		return $cache[ $key ] = $alt;
+	}
+
+	/**
+	 * The language this page is being read in.
+	 *
+	 * the_content runs inside the loop on a singular page, so Polylang has
+	 * already resolved the language of the post being displayed. Falls back to
+	 * the default, which is also what happens with Polylang inactive.
+	 */
+	private function current_language(): string {
+		if ( function_exists( 'pll_current_language' ) ) {
+			$lang = (string) pll_current_language( 'slug' );
+
+			if ( $lang !== '' ) {
+				return $lang;
+			}
+		}
+
+		return class_exists( 'Mavo_Alt_Admin' ) ? Mavo_Alt_Admin::default_language() : 'fr';
 	}
 
 	/**

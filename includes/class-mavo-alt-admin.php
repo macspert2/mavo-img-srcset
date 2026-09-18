@@ -143,11 +143,27 @@ final class Mavo_Alt_Admin {
 				'attachment_id' => $attachment_id,
 				'content_alt'   => trim( (string) $img->getAttribute( 'alt' ) ),
 				'media_alt'     => $attachment_id ? self::media_alt( $attachment_id ) : '',
+				'alts'          => self::alts_for( $attachment_id ),
 				'h2'            => self::nearest( $xpath, $img, 'h2' ),
 				'h3'            => self::nearest( $xpath, $img, 'h3' ),
 				'paragraph'     => self::nearest( $xpath, $img, 'p' ),
 				'caption'       => self::caption( $img ),
 			];
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Stored alt per language, keyed by slug.
+	 *
+	 * @return array<string,string>
+	 */
+	private static function alts_for( int $attachment_id ): array {
+		$out = [];
+
+		foreach ( self::languages() as $lang ) {
+			$out[ $lang ] = self::stored_alt( $attachment_id, $lang );
 		}
 
 		return $out;
@@ -248,6 +264,77 @@ final class Mavo_Alt_Admin {
 		}
 
 		return array_values( array_unique( array_filter( $list ) ) );
+	}
+
+/* ---------------------------------------------------------- languages */
+
+	/**
+	 * Where each language's alt text is stored.
+	 *
+	 * The default language uses WordPress's own key, so the media library screen
+	 * keeps showing the right thing and any other tool that reads alt text still
+	 * works. The others hang off the same attachment under our own keys.
+	 *
+	 * Polylang can do this properly — Languages → Settings → Media gives every
+	 * media item a translated attachment post per language, each with its own
+	 * alt. It is not enabled here, and enabling it for a 16,000-image library
+	 * would mean tens of thousands of new attachment posts to gain three text
+	 * fields. These keys migrate into translated attachments cleanly if that ever
+	 * changes.
+	 */
+	public static function meta_key( string $lang ): string {
+		return $lang === self::default_language()
+			? '_wp_attachment_image_alt'
+			: '_mavo_alt_' . preg_replace( '/[^a-z0-9_]/', '', strtolower( $lang ) );
+	}
+
+	/** Site default language, asked of Polylang rather than assumed. */
+	public static function default_language(): string {
+		if ( function_exists( 'pll_default_language' ) ) {
+			$lang = (string) pll_default_language( 'slug' );
+
+			if ( $lang !== '' ) {
+				return $lang;
+			}
+		}
+
+		return 'fr';
+	}
+
+	/**
+	 * Languages to offer a field for, default first.
+	 *
+	 * Asked of Polylang, so adding a fourth language adds a fourth box with no
+	 * code change. With Polylang absent there is one language and one box.
+	 *
+	 * @return string[]
+	 */
+	public static function languages(): array {
+		$default = self::default_language();
+
+		if ( ! function_exists( 'pll_languages_list' ) ) {
+			return [ $default ];
+		}
+
+		$all = (array) pll_languages_list( [ 'fields' => 'slug' ] );
+		$all = array_values( array_filter( array_map( 'strval', $all ) ) );
+
+		if ( ! $all ) {
+			return [ $default ];
+		}
+
+		// Default first: it is the one that falls back to, and the one the media
+		// library itself shows.
+		return array_merge( [ $default ], array_values( array_diff( $all, [ $default ] ) ) );
+	}
+
+	/** The stored alt for one language, untouched by any fallback. */
+	public static function stored_alt( int $attachment_id, string $lang ): string {
+		if ( $attachment_id < 1 ) {
+			return '';
+		}
+
+		return trim( (string) get_post_meta( $attachment_id, self::meta_key( $lang ), true ) );
 	}
 
 	private static function media_alt( int $attachment_id ): string {
@@ -366,7 +453,6 @@ final class Mavo_Alt_Admin {
 	/** One image: the picture, its context, and the field. */
 	private static function render_image( array $image ): void {
 		$id      = (int) $image['attachment_id'];
-		$value   = $image['content_alt'] !== '' ? $image['content_alt'] : $image['media_alt'];
 		$uses    = (int) ( $image['uses'] ?? 0 );
 		$differs = $id > 0 && $image['content_alt'] !== '' && $image['media_alt'] !== ''
 			&& $image['content_alt'] !== $image['media_alt'];
@@ -404,23 +490,49 @@ final class Mavo_Alt_Admin {
 				<?php endforeach; ?>
 
 				<?php if ( $id ) : ?>
-					<label class="mavo-alt__label" for="alt-<?php echo (int) $image['index']; ?>">
-						<?php esc_html_e( 'Alt text', 'mavo-img-srcset' ); ?>
-					</label>
 					<input type="hidden" name="attachment[]" value="<?php echo (int) $id; ?>">
-					<textarea id="alt-<?php echo (int) $image['index']; ?>"
-					          name="alt[]"
-					          rows="2"
-					          class="large-text"
-					          placeholder="<?php esc_attr_e( 'Leave empty if the image is decorative', 'mavo-img-srcset' ); ?>"><?php echo esc_textarea( $value ); ?></textarea>
+
+					<?php
+					$default = self::default_language();
+
+					foreach ( self::languages() as $lang ) :
+						$field = 'alt-' . (int) $image['index'] . '-' . $lang;
+						$is_default = $lang === $default;
+
+						// The default language prefills from the content when the
+						// library is still empty — that text is usually the best
+						// starting point there is. A translation has no such
+						// source, so it starts blank rather than showing French.
+						$prefill = $image['alts'][ $lang ] ?? '';
+
+						if ( $is_default && $prefill === '' ) {
+							$prefill = $image['content_alt'];
+						}
+						?>
+						<label class="mavo-alt__label" for="<?php echo esc_attr( $field ); ?>">
+							<?php echo esc_html( strtoupper( $lang ) ); ?>
+							<?php if ( $is_default ) : ?>
+								<span class="mavo-alt__hint"><?php esc_html_e( 'media library', 'mavo-img-srcset' ); ?></span>
+							<?php else : ?>
+								<span class="mavo-alt__hint"><?php esc_html_e( 'empty falls back to the default language', 'mavo-img-srcset' ); ?></span>
+							<?php endif; ?>
+						</label>
+						<textarea id="<?php echo esc_attr( $field ); ?>"
+						          name="alt[<?php echo esc_attr( $lang ); ?>][]"
+						          rows="2"
+						          class="large-text"
+						          placeholder="<?php echo esc_attr( $is_default
+							          ? __( 'Leave empty if the image is decorative', 'mavo-img-srcset' )
+							          : __( 'Leave empty to use the default language', 'mavo-img-srcset' ) ); ?>"><?php echo esc_textarea( $prefill ); ?></textarea>
+					<?php endforeach; ?>
 
 					<?php if ( $differs ) : ?>
 						<p class="mavo-alt__warn">
 							<?php
 							printf(
 								/* translators: %s: the alt text stored in the media library */
-								esc_html__( 'The media library currently says: %s', 'mavo-img-srcset' ),
-								esc_html( $image['media_alt'] )
+								esc_html__( 'Different text is baked into this post: %s', 'mavo-img-srcset' ),
+								esc_html( $image['content_alt'] )
 							);
 							?>
 						</p>
@@ -511,23 +623,36 @@ final class Mavo_Alt_Admin {
 
 		check_admin_referer( self::ACTION . '_' . $post_id );
 
-		$ids  = isset( $_POST['attachment'] ) ? array_map( 'intval', (array) wp_unslash( $_POST['attachment'] ) ) : [];
-		$alts = isset( $_POST['alt'] ) ? array_map( 'sanitize_text_field', (array) wp_unslash( $_POST['alt'] ) ) : [];
+		$ids   = isset( $_POST['attachment'] ) ? array_map( 'intval', (array) wp_unslash( $_POST['attachment'] ) ) : [];
+		$posted = isset( $_POST['alt'] ) && is_array( $_POST['alt'] ) ? wp_unslash( $_POST['alt'] ) : [];
+		$saved  = 0;
 
-		$saved = 0;
+		foreach ( self::languages() as $lang ) {
+			$values = isset( $posted[ $lang ] ) ? array_map( 'sanitize_text_field', (array) $posted[ $lang ] ) : [];
 
-		foreach ( $ids as $i => $attachment_id ) {
-			if ( $attachment_id < 1 || ! isset( $alts[ $i ] ) ) {
-				continue;
-			}
+			foreach ( $ids as $i => $attachment_id ) {
+				if ( $attachment_id < 1 || ! isset( $values[ $i ] ) ) {
+					continue;
+				}
 
-			$alt = trim( $alts[ $i ] );
+				$alt = trim( $values[ $i ] );
+				$key = self::meta_key( $lang );
 
-			// An empty box is a decision — the image is decorative — so it is
-			// stored as an empty value rather than skipped. Assistive technology
-			// passes over alt="" deliberately.
-			if ( self::media_alt( $attachment_id ) !== $alt ) {
-				update_post_meta( $attachment_id, '_wp_attachment_image_alt', $alt );
+				if ( self::stored_alt( $attachment_id, $lang ) === $alt ) {
+					continue;
+				}
+
+				// An empty box is a decision, not an omission: for the default
+				// language it means the image is decorative, and for a
+				// translation it means "use the default". Both are stored as
+				// empty rather than skipped, so clearing a field actually clears
+				// it — deleting the row keeps get_post_meta() honest.
+				if ( $alt === '' ) {
+					delete_post_meta( $attachment_id, $key );
+				} else {
+					update_post_meta( $attachment_id, $key, $alt );
+				}
+
 				$saved++;
 			}
 		}
@@ -561,6 +686,7 @@ final class Mavo_Alt_Admin {
 			.mavo-alt__ctx { margin:2px 0; color:#50575e; font-size:13px; }
 			.mavo-alt__ctx span { display:inline-block; min-width:2em; color:#787c82; font-weight:600; }
 			.mavo-alt__label { display:block; margin:12px 0 4px; font-weight:600; }
+			.mavo-alt__hint { font-weight:400; color:#787c82; font-size:12px; margin-left:6px; }
 			.mavo-alt__warn { color:#8a6d00; font-size:12px; }
 			.mavo-alt__actions { position:sticky; bottom:0; background:#f0f0f1; padding:12px 0; margin-top:20px; border-top:1px solid #c3c4c7; display:flex; gap:10px; align-items:center; }
 			@media (max-width:1100px) { .mavo-alt__row { flex-direction:column; } .mavo-alt__thumb { flex-basis:auto; } }
