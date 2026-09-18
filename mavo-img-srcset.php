@@ -3,7 +3,7 @@
  * Plugin Name: mavo-img-srcset
  * Plugin URI:  https://mamanvoyage.com
  * Description: Converts img tags to responsive WebP srcset on the fly, without touching the database.
- * Version:     1.0.0
+ * Version:     2.0.0
  * Author:      mavo
  * License:     GPL-2.0+
  */
@@ -13,6 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/includes/class-mavo-webp-files.php';
+require_once __DIR__ . '/includes/class-mavo-webp-urls.php';
 
 // Deleting an attachment now removes its recorded sizes, so the sidecars have to
 // go with them or every deletion leaves orphans behind.
@@ -41,6 +42,11 @@ class Mavo_Img_Srcset {
 		add_filter( 'wp_get_attachment_image_attributes', [ $this, 'add_fetchpriority' ], 10, 2 );
 		add_action( 'wp_enqueue_scripts',             [ $this, 'enqueue_styles' ] );
 		add_filter( 'wp_generate_attachment_metadata', [ $this, 'generate_webp_for_attachment' ], 10, 2 );
+
+		// Core builds the srcset from real filenames; this points each candidate
+		// at its .webp sidecar. Replaces the filename arithmetic that used to
+		// live in process_img().
+		Mavo_Webp_Urls::register();
 	}
 
 	/**
@@ -167,102 +173,27 @@ class Mavo_Img_Srcset {
 	}
 
 	/**
-	 * URL of an intermediate size's WebP, or null when no such file exists.
+	 * Editorial clean-up of one content image. The responsive layer is not here.
 	 *
-	 * Every URL here is guessed by arithmetic rather than read from attachment
-	 * metadata, and a guess that misses produces a srcset entry the browser
-	 * cannot load — an image that simply does not paint, with nothing in any
-	 * error log to say so. A sweep of the live site found 18 such URLs across 42
-	 * posts, from two causes:
+	 * Until the attachment metadata was repaired, this method also built the
+	 * whole responsive image: it derived 640w and 480w filenames by arithmetic,
+	 * appended .webp and replaced the <img> wholesale. It had to, because 93% of
+	 * attachments had no sizes recorded and wp_calculate_image_srcset() could
+	 * therefore return nothing. Now that the real filenames are in metadata, core
+	 * builds the srcset from them and Mavo_Webp_Urls points each candidate at its
+	 * sidecar — so the guessing, and the two classes of 404 it produced, are gone.
 	 *
-	 *   -rotated  WordPress writes an EXIF-rotated upload as "IMG_6585-rotated.jpeg"
-	 *             but names the intermediate sizes after the un-rotated base, so
-	 *             the file on disk is "IMG_6585-640x853.jpeg", never
-	 *             "IMG_6585-rotated-640x853.jpeg". Every portrait phone photo hits
-	 *             this. The un-rotated base is therefore tried first.
+	 * What remains is the part core has no opinion about: the alt fallback, the
+	 * alignment classes, unwrapping a centred <p>, and turning a trailing <em>
+	 * into a <figcaption>. The guards above are unchanged on purpose, so exactly
+	 * the same images are touched as before and the only difference in the output
+	 * is the attributes that moved to core.
 	 *
-	 *   rounding  The heights below come from the width/height attributes the
-	 *             editor stored, which are themselves rounded, so they can land a
-	 *             pixel away from the dimensions WordPress used for the filename
-	 *             (…-640x452 guessed, …-640x453 on disk).
-	 *
-	 * Rather than guess harder, an entry that does not resolve to a file is left
-	 * out of the srcset: the browser then falls back to the 960w candidate, which
-	 * has already been checked. Only unresolvable URLs are affected — an image
-	 * whose three files all exist comes out byte-identical to before.
-	 *
-	 * The proper repair is to read $meta['sizes'] via the wp-image-NNN class, the
-	 * way Mavo Picture Tag does; that changes the URL of every image on the site
-	 * and is left for a separate, verifiable change.
+	 * The element is now modified in place rather than rebuilt, so every
+	 * attribute this method does not name survives untouched.
 	 */
-	private function sized_webp( string $dir, string $filename, string $ext, int $width, int $height ): ?string {
-		if ( $height <= 0 ) {
-			return null;
-		}
-
-		$bases = [ $filename ];
-
-		if ( preg_match( '/^(.+)-rotated$/', $filename, $m ) ) {
-			array_unshift( $bases, $m[1] );
-		}
-
-		foreach ( $bases as $base ) {
-			$url = $dir . '/' . $base . '-' . $width . 'x' . $height . '.' . $ext . '.webp';
-
-			if ( $this->webp_exists( $url ) ) {
-				return $url;
-			}
-		}
-
-		return null;
-	}
-
-	/**
-	 * Whether a derived URL resolves to a file in the uploads directory.
-	 *
-	 * A URL that cannot be mapped to a local path at all — a CDN, offloaded
-	 * media, a rewritten domain — is reported as present, so those installs keep
-	 * the behaviour they have today rather than losing every srcset entry.
-	 */
-	private function webp_exists( string $url ): bool {
-		static $cache = [];
-
-		if ( isset( $cache[ $url ] ) ) {
-			return $cache[ $url ];
-		}
-
-		$path = $this->local_path( $url );
-
-		return $cache[ $url ] = ( $path === null ) ? true : file_exists( $path );
-	}
-
-	/** Maps an uploads URL to its path on disk, or null if it is not one. */
-	private function local_path( string $url ): ?string {
-		static $uploads = null;
-
-		if ( $uploads === null ) {
-			$uploads = wp_upload_dir();
-		}
-
-		$baseurl = $uploads['baseurl'] ?? '';
-		$basedir = $uploads['basedir'] ?? '';
-
-		if ( $baseurl === '' || $basedir === '' || ! empty( $uploads['error'] ) ) {
-			return null;
-		}
-
-		// http/https and protocol-relative all name the same directory.
-		foreach ( [ $baseurl, set_url_scheme( $baseurl, 'http' ), set_url_scheme( $baseurl, 'https' ), preg_replace( '#^https?:#', '', $baseurl ) ] as $prefix ) {
-			if ( $prefix !== '' && str_starts_with( $url, $prefix ) ) {
-				return $basedir . substr( $url, strlen( $prefix ) );
-			}
-		}
-
-		return null;
-	}
-
 	private function process_img( DOMElement $img, DOMDocument $doc, int $post_id ): void {
-		// --- Skip conditions ---
+		// --- Skip conditions (deliberately identical to the previous version) ---
 
 		$width_attr = $img->getAttribute( 'width' );
 		if ( $width_attr === '' || (int) $width_attr < 960 ) {
@@ -283,71 +214,33 @@ class Mavo_Img_Srcset {
 			return;
 		}
 
-		// --- URL derivation ---
+		// --- Alt fallback ---
+
+		if ( $img->getAttribute( 'alt' ) === '' && $post_id > 0 ) {
+			$img->setAttribute( 'alt', $this->get_fallback_alt( $post_id ) );
+		}
+
+		// --- Alignment classes: strip whatever was chosen, centre everything ---
+
+		$class = preg_replace( '/\balign(?:center|left|right|none)\b\s*/', '', $img->getAttribute( 'class' ) );
+		$class = trim( preg_replace( '/\s+/', ' ', (string) $class ) );
+		$img->setAttribute( 'class', trim( $class . ' aligncenter mavo-img-tag' ) );
+
+		// --- Display dimensions ---
+		// Still normalised to the 960px content column. These are layout hints,
+		// not filenames: being a pixel out costs nothing, which is why this
+		// arithmetic is safe to keep while the arithmetic that named files was not.
 
 		$orig_width  = (int) $width_attr;
 		$orig_height = (int) $img->getAttribute( 'height' );
-		$dir         = pathinfo( $src, PATHINFO_DIRNAME );
-		$filename    = pathinfo( $src, PATHINFO_FILENAME );
 
-		$h960 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 960 * $orig_height / $orig_width )
-			: $orig_height;
-		$h640 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 640 * $orig_height / $orig_width )
-			: 0;
-		$h480 = ( $orig_width > 0 && $orig_height > 0 )
-			? (int) round( 480 * $orig_height / $orig_width )
-			: 0;
-
-		// The full-size WebP carries the whole thing: it is both the src and the
-		// 960w candidate, so if it is missing there is no safe output to build and
-		// the original <img> is left exactly as the editor wrote it.
-		$webp_960 = $src . '.webp';
-		if ( ! $this->webp_exists( $webp_960 ) ) {
-			return;
+		if ( $orig_width > 0 && $orig_height > 0 ) {
+			$img->setAttribute( 'height', (string) (int) round( 960 * $orig_height / $orig_width ) );
 		}
 
-		$srcset = [ $webp_960 . ' 960w' ];
+		$img->setAttribute( 'width', '960' );
 
-		foreach ( [ 640 => $h640, 480 => $h480 ] as $width => $height ) {
-			$candidate = $this->sized_webp( $dir, $filename, $ext, $width, $height );
-			if ( $candidate !== null ) {
-				$srcset[] = $candidate . ' ' . $width . 'w';
-			}
-		}
-
-		// --- Build new <img> ---
-
-		$new_img = $doc->createElement( 'img' );
-		$new_img->setAttribute( 'src', $webp_960 );
-		$new_img->setAttribute( 'srcset', implode( ', ', $srcset ) );
-		$new_img->setAttribute( 'sizes', self::SIZES );
-		$alt = $img->getAttribute( 'alt' );
-		if ( $alt === '' && $post_id > 0 ) {
-			$alt = $this->get_fallback_alt( $post_id );
-		}
-		$new_img->setAttribute( 'alt', $alt );
-
-		// Strip alignment classes, then add aligncenter.
-		$class = preg_replace( '/\balign(?:center|left|right|none)\b\s*/', '', $img->getAttribute( 'class' ) );
-		$class = trim( preg_replace( '/\s+/', ' ', $class ) );
-		$new_img->setAttribute( 'class', trim( $class . ' aligncenter mavo-img-tag' ) );
-
-		$new_img->setAttribute( 'width', '960' );
-		if ( $h960 > 0 ) {
-			$new_img->setAttribute( 'height', (string) $h960 );
-		}
-		$fetchpriority = $img->getAttribute( 'fetchpriority' );
-		if ( $fetchpriority !== '' ) {
-			$new_img->setAttribute( 'fetchpriority', $fetchpriority );
-			$new_img->setAttribute( 'loading', 'eager' );
-		} else {
-			$new_img->setAttribute( 'loading', 'lazy' );
-		}
-		$new_img->setAttribute( 'decoding', 'async' );
-
-		// --- Determine anchor node ---
+		// --- Anchor: a centred <p> wrapper is dropped, the image replaces it ---
 
 		$parent        = $img->parentNode;
 		$is_centered_p = (
@@ -358,9 +251,10 @@ class Mavo_Img_Srcset {
 		);
 		$anchor = $is_centered_p ? $parent : $img;
 
-		// --- Detect <em> caption immediately following the anchor ---
-		// Check img's next sibling first (covers em inside a centered <p> alongside the img),
-		// then fall back to the anchor's next sibling (covers em outside the <p>).
+		// --- A trailing <em> becomes the caption ---
+		// The image's own next sibling is checked first, which covers an <em>
+		// sitting inside the centred <p> beside the image; the anchor's sibling
+		// covers an <em> outside it.
 
 		$em_node          = null;
 		$whitespace_nodes = [];
@@ -369,54 +263,65 @@ class Mavo_Img_Srcset {
 			if ( $start === null ) {
 				continue;
 			}
-			$sibling           = $start;
-			$candidate_ws      = [];
-			$candidate_em      = null;
+
+			$sibling      = $start;
+			$candidate_ws = [];
+			$candidate_em = null;
+
 			while ( $sibling !== null ) {
 				if ( $sibling instanceof DOMText && trim( $sibling->nodeValue ) === '' ) {
 					$candidate_ws[] = $sibling;
 					$sibling        = $sibling->nextSibling;
+
 					continue;
 				}
+
 				if ( $sibling instanceof DOMElement && $sibling->nodeName === 'em' ) {
 					$candidate_em = $sibling;
 				}
+
 				break;
 			}
+
 			if ( $candidate_em !== null ) {
 				$em_node          = $candidate_em;
 				$whitespace_nodes = $candidate_ws;
+
 				break;
 			}
 		}
-
-		// --- Build output node ---
-
-		if ( $em_node !== null ) {
-			$figure = $doc->createElement( 'figure' );
-			$figure->setAttribute( 'class', 'wp-picture-figure' );
-			$figure->appendChild( $new_img );
-			$figcaption              = $doc->createElement( 'figcaption' );
-			$figcaption->textContent = $em_node->textContent;
-			$figure->appendChild( $figcaption );
-			$output = $figure;
-		} else {
-			$output = $new_img;
-		}
-
-		// --- Replace anchor ---
 
 		if ( $anchor->parentNode === null ) {
 			return;
 		}
-		$anchor->parentNode->insertBefore( $output, $anchor );
-		$anchor->parentNode->removeChild( $anchor );
+
+		// --- Restructure ---
+
+		if ( $em_node !== null ) {
+			$figure = $doc->createElement( 'figure' );
+			$figure->setAttribute( 'class', 'wp-picture-figure' );
+
+			$anchor->parentNode->insertBefore( $figure, $anchor );
+			$figure->appendChild( $img );   // moves the element out of the anchor
+
+			$figcaption              = $doc->createElement( 'figcaption' );
+			$figcaption->textContent = $em_node->textContent;
+			$figure->appendChild( $figcaption );
+
+			if ( $anchor !== $img ) {
+				$anchor->parentNode->removeChild( $anchor );
+			}
+		} elseif ( $anchor !== $img ) {
+			$anchor->parentNode->insertBefore( $img, $anchor );
+			$anchor->parentNode->removeChild( $anchor );
+		}
 
 		foreach ( $whitespace_nodes as $node ) {
 			if ( $node->parentNode ) {
 				$node->parentNode->removeChild( $node );
 			}
 		}
+
 		if ( $em_node !== null && $em_node->parentNode ) {
 			$em_node->parentNode->removeChild( $em_node );
 		}
