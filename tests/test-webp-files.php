@@ -123,6 +123,74 @@ is_same( 2, Mavo_Webp_Files::for_attachment( 7 )['skipped'], 're-running reports
 $GLOBALS['ATT'][8] = [ 'file' => $full, 'mime' => 'image/png', 'meta' => [] ];
 is_same( 0, Mavo_Webp_Files::for_attachment( 8 )['converted'], 'PNG attachments are skipped' );
 
+/* ---- discovering resized files that metadata never recorded ------------- */
+
+function attach( int $id, string $file, array $sizes = [] ): void {
+	$GLOBALS['ATT'][ $id ] = [
+		'file' => $file,
+		'mime' => 'image/jpeg',
+		'meta' => [ 'width' => 960, 'height' => 720, 'sizes' => $sizes ],
+	];
+}
+
+$d = $GLOBALS['DIR'] . '/orphans';
+@mkdir( $d, 0777, true );
+
+foreach ( [
+	'holiday.jpg',            // the attachment
+	'holiday-640x480.jpg',    // its intermediates, unknown to WordPress
+	'holiday-480x360.jpg',
+	'holiday-2.jpg',          // a DIFFERENT attachment
+	'holiday-2-640x480.jpg',  // belonging to that one
+	'map-960x720.jpg',        // an upload whose own name looks like a size
+	'note.txt',
+] as $f ) {
+	touch( "$d/$f" );
+}
+
+attach( 10, "$d/holiday.jpg" );
+attach( 11, "$d/holiday-2.jpg" );
+attach( 12, "$d/map-960x720.jpg" );
+
+// map-960x720.jpg is itself an attachment, so it must never be claimed.
+$taken = [ "$d/holiday.jpg" => true, "$d/holiday-2.jpg" => true, "$d/map-960x720.jpg" => true ];
+
+$found = Mavo_Webp_Files::orphan_sizes( 10, $taken );
+is_same( [ 'holiday-480x360.jpg', 'holiday-640x480.jpg' ],
+	( static function ( $f ) { $n = array_column( $f, 'file' ); sort( $n ); return $n; } )( $found ),
+	'finds the attachment\'s own unrecorded intermediates' );
+ok( ! in_array( 'holiday-2-640x480.jpg', array_column( $found, 'file' ), true ),
+	'never claims a neighbour\'s intermediate (holiday-2-640x480)' );
+ok( ! in_array( 'map-960x720.jpg', array_column( $found, 'file' ), true ),
+	'never claims a real upload that merely looks like a size' );
+is_same( 640, $found['mavo-640x480']['width'], 'width is read from the filename' );
+is_same( 480, $found['mavo-640x480']['height'], 'height is read from the filename' );
+
+$found11 = Mavo_Webp_Files::orphan_sizes( 11, $taken );
+is_same( [ 'holiday-2-640x480.jpg' ], array_column( $found11, 'file' ),
+	'the neighbour finds its own intermediate, and only that' );
+
+/* already-recorded sizes are left out */
+attach( 13, "$d/holiday.jpg", [ 'x' => [ 'file' => 'holiday-640x480.jpg', 'width' => 640, 'height' => 480 ] ] );
+is_same( [ 'holiday-480x360.jpg' ], array_column( Mavo_Webp_Files::orphan_sizes( 13, $taken ), 'file' ),
+	'a size WordPress already recorded is not offered again' );
+
+/* -rotated and -scaled full sizes have plainly-named intermediates */
+foreach ( [ 'IMG_9-rotated.jpeg', 'IMG_9-640x853.jpeg', 'IMG_9-480x640.jpeg' ] as $f ) { touch( "$d/$f" ); }
+attach( 14, "$d/IMG_9-rotated.jpeg" );
+$rot = array_column( Mavo_Webp_Files::orphan_sizes( 14, $taken ), 'file' );
+sort( $rot );
+is_same( [ 'IMG_9-480x640.jpeg', 'IMG_9-640x853.jpeg' ], $rot,
+	'a -rotated original finds its un-rotated intermediates' );
+
+foreach ( [ 'IMG_8-scaled.jpg', 'IMG_8-640x480.jpg' ] as $f ) { touch( "$d/$f" ); }
+attach( 15, "$d/IMG_8-scaled.jpg" );
+is_same( [ 'IMG_8-640x480.jpg' ], array_column( Mavo_Webp_Files::orphan_sizes( 15, $taken ), 'file' ),
+	'a -scaled original finds its unsuffixed intermediates' );
+
+/* non-image neighbours are ignored */
+ok( ! in_array( 'note.txt', array_column( $found, 'file' ), true ), 'unrelated files are ignored' );
+
 echo "\n$T assertions, $F failed\n";
 exec( 'rm -rf ' . escapeshellarg( $GLOBALS['DIR'] ) );
 exit( $F ? 1 : 0 );

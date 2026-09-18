@@ -265,6 +265,108 @@ final class Mavo_Webp_CLI {
 		WP_CLI::success( 'Done.' );
 	}
 
+/**
+	 * Records the resized files that are on disk but missing from metadata.
+	 *
+	 * Most of this library's intermediates were created out of band, so WordPress
+	 * has no record of them: 93% of attachments carry no sizes at all, which is
+	 * why core cannot build a srcset for them and why the renderer guesses
+	 * filenames instead. This writes what is already on disk into the metadata,
+	 * without re-encoding anything.
+	 *
+	 * Additive only — an entry WordPress already recorded is never modified.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--dry-run]
+	 * : Report what would be recorded without writing anything.
+	 *
+	 * [--attachment=<id>]
+	 * : Restrict the run to a single attachment.
+	 *
+	 * [--limit=<n>]
+	 * : Stop after this many attachments.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp mavo-webp repair-sizes --dry-run
+	 *     wp mavo-webp repair-sizes
+	 *
+	 * @subcommand repair-sizes
+	 */
+	public function repair_sizes( $args, $assoc ): void {
+		$dry   = (bool) ( $assoc['dry-run'] ?? false );
+		$limit = isset( $assoc['limit'] ) ? max( 1, (int) $assoc['limit'] ) : PHP_INT_MAX;
+
+		WP_CLI::log( 'Indexing attachment files…' );
+		$taken = Mavo_Webp_Files::attached_paths();
+		WP_CLI::log( sprintf( '%d registered file(s) indexed.', count( $taken ) ) );
+
+		$c        = [ 'seen' => 0, 'with_orphans' => 0, 'sizes' => 0, 'unchanged' => 0 ];
+		$spread   = [];
+		$listings = [];   // directory => scandir result, reused across neighbours
+
+		$work = static function ( int $id ) use ( &$c, &$spread, &$listings, $taken, $dry ): void {
+			$c['seen']++;
+
+			$file = get_attached_file( $id );
+
+			if ( ! $file ) {
+				return;
+			}
+
+			$dir = dirname( $file );
+
+			// Attachments are walked in ID order, so neighbours share a directory.
+			if ( ! isset( $listings[ $dir ] ) ) {
+				$listings = [ $dir => ( @scandir( $dir ) ?: [] ) ];
+			}
+
+			$found = Mavo_Webp_Files::orphan_sizes( $id, $taken, $listings[ $dir ] );
+
+			if ( ! $found ) {
+				$c['unchanged']++;
+
+				return;
+			}
+
+			$c['with_orphans']++;
+			$c['sizes'] += count( $found );
+
+			$n            = count( $found );
+			$spread[ $n ] = ( $spread[ $n ] ?? 0 ) + 1;
+
+			if ( ! $dry ) {
+				Mavo_Webp_Files::record_sizes( $id, $found );
+			}
+		};
+
+		if ( isset( $assoc['attachment'] ) ) {
+			$work( (int) $assoc['attachment'] );
+		} else {
+			$this->each_attachment( $limit, $work );
+		}
+
+		WP_CLI::log( '' );
+		WP_CLI::log( sprintf( 'Attachments examined          : %d', $c['seen'] ) );
+		WP_CLI::log( sprintf( '  with unrecorded resized files: %d', $c['with_orphans'] ) );
+		WP_CLI::log( sprintf( '  already complete             : %d', $c['unchanged'] ) );
+		WP_CLI::log( sprintf( '%s: %d', $dry ? 'Sizes that would be recorded  ' : 'Sizes recorded                ', $c['sizes'] ) );
+
+		ksort( $spread );
+
+		if ( $spread ) {
+			WP_CLI::log( '' );
+			WP_CLI::log( 'Unrecorded files per attachment:' );
+
+			foreach ( $spread as $n => $count ) {
+				WP_CLI::log( sprintf( '  %2d file(s) : %6d', $n, $count ) );
+			}
+		}
+
+		WP_CLI::success( $dry ? 'Dry run complete; nothing was written.' : 'Metadata updated.' );
+	}
+
 	/** Stops early when cwebp cannot be run, unless the caller only reads. */
 	private function require_binary( bool $tolerate ): void {
 		if ( Mavo_Webp_Files::available() ) {

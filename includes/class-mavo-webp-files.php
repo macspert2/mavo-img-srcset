@@ -206,6 +206,137 @@ final class Mavo_Webp_Files {
 		return $result;
 	}
 
+/**
+	 * Resized files sitting beside an attachment that its metadata never recorded.
+	 *
+	 * Most of this library's intermediates were produced out of band rather than
+	 * by WordPress, so they exist on disk while _wp_attachment_metadata['sizes']
+	 * is empty. Core's wp_calculate_image_srcset() reads only that array, so for
+	 * those attachments core can build nothing at all — which is why this plugin
+	 * derives filenames by arithmetic in the first place.
+	 *
+	 * Matching is deliberately strict:
+	 *   - the pattern anchors digits-x-digits directly after the base, so
+	 *     "photo-2-640x480.jpg" can never be claimed by "photo.jpg";
+	 *   - a candidate that is itself some attachment's registered full-size file
+	 *     is skipped, so an upload named "map-960x720.jpg" is not swallowed as an
+	 *     intermediate of "map.jpg";
+	 *   - -rotated and -scaled are stripped from the base first, because the full
+	 *     size carries those suffixes while its intermediates do not.
+	 *
+	 * @param string[] $taken   Absolute paths that are some attachment's own file.
+	 * @param array    $listing Directory listing, reused across one directory.
+	 * @return array<string,array{file:string,width:int,height:int}> Keyed by size name.
+	 */
+	public static function orphan_sizes( int $attachment_id, array $taken = [], ?array $listing = null ): array {
+		$file = get_attached_file( $attachment_id );
+
+		if ( ! $file || ! file_exists( $file ) ) {
+			return [];
+		}
+
+		$dir  = dirname( $file );
+		$name = pathinfo( $file, PATHINFO_FILENAME );
+		$ext  = pathinfo( $file, PATHINFO_EXTENSION );
+
+		// IMG_1-rotated.jpeg and IMG_1-scaled.jpg both have plain intermediates.
+		$base = preg_replace( '/-scaled$/', '', $name );
+		$base = preg_replace( '/-rotated$/', '', $base );
+
+		$meta  = wp_get_attachment_metadata( $attachment_id );
+		$known = [];
+
+		foreach ( ( is_array( $meta ) ? ( $meta['sizes'] ?? [] ) : [] ) as $size ) {
+			if ( ! empty( $size['file'] ) ) {
+				$known[ $size['file'] ] = true;
+			}
+		}
+
+		$listing = $listing ?? @scandir( $dir ) ?: [];
+		$pattern = '/^' . preg_quote( $base, '/' ) . '-(\d+)x(\d+)\.' . preg_quote( $ext, '/' ) . '$/i';
+		$found   = [];
+
+		foreach ( $listing as $entry ) {
+			if ( isset( $known[ $entry ] ) || $entry === basename( $file ) ) {
+				continue;
+			}
+
+			if ( ! preg_match( $pattern, $entry, $m ) ) {
+				continue;
+			}
+
+			if ( isset( $taken[ $dir . '/' . $entry ] ) ) {
+				continue;   // someone else's original
+			}
+
+			$found[ 'mavo-' . $m[1] . 'x' . $m[2] ] = [
+				'file'   => $entry,
+				'width'  => (int) $m[1],
+				'height' => (int) $m[2],
+			];
+		}
+
+		return $found;
+	}
+
+	/**
+	 * Writes discovered sizes into the attachment's metadata.
+	 *
+	 * Existing entries are never touched: this only adds what WordPress did not
+	 * already know. Returns the number of sizes added.
+	 */
+	public static function record_sizes( int $attachment_id, array $sizes ): int {
+		if ( ! $sizes ) {
+			return 0;
+		}
+
+		$meta = wp_get_attachment_metadata( $attachment_id );
+		$meta = is_array( $meta ) ? $meta : [];
+
+		// srcset needs the full size's own dimensions; fill them if absent.
+		if ( empty( $meta['width'] ) || empty( $meta['height'] ) ) {
+			$dims = @getimagesize( (string) get_attached_file( $attachment_id ) );
+
+			if ( ! $dims ) {
+				return 0;
+			}
+
+			$meta['width']  = (int) $dims[0];
+			$meta['height'] = (int) $dims[1];
+		}
+
+		$meta['sizes'] = array_merge( $sizes, is_array( $meta['sizes'] ?? null ) ? $meta['sizes'] : [] );
+
+		wp_update_attachment_metadata( $attachment_id, $meta );
+
+		return count( $sizes );
+	}
+
+	/**
+	 * Every path that is some attachment's own full-size file.
+	 *
+	 * One query, used to stop a real upload being mistaken for an intermediate.
+	 *
+	 * @return array<string,true>
+	 */
+	public static function attached_paths(): array {
+		global $wpdb;
+
+		$rows = $wpdb->get_col(
+			"SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file'"
+		);
+
+		$uploads = wp_upload_dir();
+		$base    = trailingslashit( $uploads['basedir'] ?? '' );
+		$paths   = [];
+
+		foreach ( $rows as $rel ) {
+			$paths[ $base . $rel ] = true;
+		}
+
+		return $paths;
+	}
+
 	/** Total JPEG attachments, for progress reporting. */
 	public static function count_attachments(): int {
 		global $wpdb;
