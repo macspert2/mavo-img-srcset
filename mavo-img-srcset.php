@@ -12,6 +12,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/includes/class-mavo-webp-files.php';
+
+// CLI only, so the command class never loads on a web request.
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	require_once __DIR__ . '/includes/class-mavo-webp-cli.php';
+}
+
 class Mavo_Img_Srcset {
 
 	/**
@@ -32,35 +39,17 @@ class Mavo_Img_Srcset {
 		add_filter( 'wp_generate_attachment_metadata', [ $this, 'generate_webp_for_attachment' ], 10, 2 );
 	}
 
+	/**
+	 * Creates the sidecars for a freshly uploaded image.
+	 *
+	 * The work moved to Mavo_Webp_Files so that `wp mavo-webp backfill` converts
+	 * files exactly the way an upload does — one implementation, not two that
+	 * have to be kept in step. $metadata is passed through because it is the
+	 * filter's return value, and forwarded because at this point it is fresher
+	 * than anything stored for the attachment.
+	 */
 	public function generate_webp_for_attachment( array $metadata, int $attachment_id ): array {
-		if ( get_post_mime_type( $attachment_id ) !== 'image/jpeg' ) {
-			return $metadata;
-		}
-
-		$file = get_attached_file( $attachment_id );
-		if ( ! $file || ! file_exists( $file ) ) {
-			return $metadata;
-		}
-
-		$files = [ $file ];
-
-		if ( ! empty( $metadata['sizes'] ) ) {
-			$dir = dirname( $file );
-			foreach ( $metadata['sizes'] as $size ) {
-				$size_path = $dir . '/' . $size['file'];
-				if ( file_exists( $size_path ) ) {
-					$files[] = $size_path;
-				}
-			}
-		}
-
-		foreach ( $files as $src ) {
-			exec( sprintf(
-				'cwebp -q 82 -metadata icc %s -o %s 2>/dev/null',
-				escapeshellarg( $src ),
-				escapeshellarg( $src . '.webp' )
-			) );
-		}
+		Mavo_Webp_Files::for_attachment( $attachment_id, false, $metadata );
 
 		return $metadata;
 	}
