@@ -1,6 +1,6 @@
 # mavo-img-srcset — Plugin Plan
 
-WordPress plugin that converts simple `<img>` tags with jpgs into responsive `<img>` tags with webp on the fly, without touching the database. Targets the site mamanvoyage.com (GeneratePress free theme, Swift Performance caching, Jetpack optional CDN).
+WordPress plugin that converts simple `<img>` tags with jpgs into responsive `<img>` tags with webp on the fly, without touching the database. Targets the site mamanvoyage.com (GeneratePress free theme, Cache Enabler full-page caching behind Cloudflare, Jetpack optional CDN).
 
 ---
 
@@ -52,6 +52,31 @@ From the original `src` (e.g. `.../IMG_1987.jpeg`):
 | 480w JPEG | `basename-480x{h}.ext` |
 | for all 3 above: convert to WebP | append `.webp` to each JPEG URL above |
 
+`round`, not truncation — `wp_constrain_dimensions()` rounds, and truncating names
+files that do not exist. `basename` drops a trailing `-rotated`: WordPress writes an
+EXIF-rotated upload as `IMG_6585-rotated.jpeg` but names its intermediate sizes after
+the un-rotated base.
+
+### Every derived URL is checked before it is used
+
+The heights above are computed from the `width`/`height` **attributes**, which are
+themselves rounded, so a derivation can land a pixel off the real filename. Each
+candidate is therefore resolved to a path under the uploads directory and checked
+with `file_exists()`:
+
+- full-size WebP missing → the `<img>` is left exactly as the editor wrote it
+- an intermediate missing → that entry is dropped from the `srcset`
+- URL not under the uploads directory (CDN, offloaded media) → kept, as before
+
+A sweep of 42 live posts in Sept 2026 found 18 of 1309 image URLs returning 404 for
+these two reasons. `tests/run.sh` covers each case, including that an image whose
+three files all exist comes out byte-identical to the previous behaviour.
+
+The correct long-term fix is to read `$meta['sizes']` through the `wp-image-NNN`
+class rather than deriving filenames at all — the approach Mavo Picture Tag already
+uses. That changes the URL of every image on the site, so it is deliberately left
+for a separate, verifiable change.
+
 ### `<img>` structure produced
 
 ```html
@@ -96,6 +121,6 @@ figure.wp-picture-figure figcaption { font-size: .875em; font-style: italic;
 
 ## Compatibility notes
 
-- **Swift Performance**: runs after our filters and converts `srcset` → `data-srcset` on `<source>` elements for its JS lazy loader. The `<picture>/<source>` structure is preserved intact. Compatible.
+- **Cache Enabler / Cloudflare**: full-page caching runs after our filters, so the transformed markup is what gets cached. Note that Cloudflare Polish already negotiates WebP at the edge — a request for a `.jpeg` can come back as WebP — which makes part of the `.webp` sidecar machinery redundant. (The plugin emits a plain `<img>`, not `<picture>`; the `wp-picture-figure` class is a leftover name matching existing theme CSS.)
 - **Jetpack Photon CDN**: if enabled, rewrites `<img>` URLs at priority 10. Our priority 9 ensures we run first. If a CDN URL somehow reaches `process_img()`, the `?` guard skips it safely.
 - **GeneratePress free**: featured image is rendered via `wp_get_attachment_image()` (not `get_the_post_thumbnail()`), hence the dedicated `wp_get_attachment_image` hook.
