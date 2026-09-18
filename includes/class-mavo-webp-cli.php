@@ -455,6 +455,127 @@ final class Mavo_Webp_CLI {
 		WP_CLI::success( $dry ? 'Dry run complete; nothing was written.' : 'Metadata updated.' );
 	}
 
+/**
+	 * Reports the image widths that post content actually points at.
+	 *
+	 * This decides the ladder, for a reason that is easy to miss:
+	 * wp_calculate_image_srcset() walks the recorded sizes looking for the one
+	 * the img's own src names, and if it does not find it ($src_matched stays
+	 * false) it returns false and the image gets NO srcset at all — however many
+	 * other sizes are recorded. So a width that appears as a src in old content
+	 * has to be recorded, or core stays silent on that image.
+	 *
+	 * The same listing answers whether a width is safe to delete: anything
+	 * referenced here is load-bearing for a published post.
+	 *
+	 * Reads only.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--post-types=<list>]
+	 * : Defaults to post,page.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp mavo-webp content-widths
+	 *
+	 * @subcommand content-widths
+	 */
+	public function content_widths( $args, $assoc ): void {
+		global $wpdb;
+
+		$types = array_filter( array_map( 'trim', explode( ',', (string) ( $assoc['post-types'] ?? 'post,page' ) ) ) );
+
+		if ( ! $types ) {
+			WP_CLI::error( '--post-types needs at least one type.' );
+		}
+
+		$in = implode( ',', array_fill( 0, count( $types ), '%s' ) );
+
+		$total = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(ID) FROM {$wpdb->posts}
+			  WHERE post_type IN ($in) AND post_status NOT IN ('trash','auto-draft','inherit')",
+			...$types
+		) );
+
+		WP_CLI::log( sprintf( 'Scanning %d post(s)…', $total ) );
+
+		$bar     = WP_CLI\Utils\make_progress_bar( 'Posts', $total );
+		$widths  = [];
+		$full    = 0;
+		$images  = 0;
+		$offset  = 0;
+
+		while ( $offset < $total ) {
+			$rows = $wpdb->get_col( $wpdb->prepare(
+				"SELECT post_content FROM {$wpdb->posts}
+				  WHERE post_type IN ($in) AND post_status NOT IN ('trash','auto-draft','inherit')
+				  ORDER BY ID ASC LIMIT %d OFFSET %d",
+				...array_merge( $types, [ self::BATCH, $offset ] )
+			) );
+
+			if ( ! $rows ) {
+				break;
+			}
+
+			foreach ( $rows as $content ) {
+				$bar->tick();
+
+				if ( ! preg_match_all( '#/wp-content/uploads/[^"\'\s\\)]+?\.(?:jpe?g)#i', (string) $content, $m ) ) {
+					continue;
+				}
+
+				foreach ( $m[0] as $url ) {
+					$images++;
+
+					if ( preg_match( '/-(\d+)x\d+\.jpe?g$/i', $url, $d ) ) {
+						$w            = (int) $d[1];
+						$widths[ $w ] = ( $widths[ $w ] ?? 0 ) + 1;
+					} else {
+						$full++;
+					}
+				}
+			}
+
+			$offset += count( $rows );
+		}
+
+		$bar->finish();
+
+		arsort( $widths );
+
+		WP_CLI::log( '' );
+		WP_CLI::log( sprintf( 'JPEG references in content : %d', $images ) );
+		WP_CLI::log( sprintf( '  full size (no -WxH)      : %d', $full ) );
+		WP_CLI::log( sprintf( '  sized                    : %d', $images - $full ) );
+		WP_CLI::log( '' );
+		WP_CLI::log( 'Widths used as src in post content — each MUST be recorded' );
+		WP_CLI::log( 'in metadata or core emits no srcset for that image:' );
+		WP_CLI::log( '' );
+		WP_CLI::log( '  width     references   cumulative' );
+
+		$seen = 0;
+		$sized = max( 1, $images - $full );
+
+		foreach ( $widths as $w => $count ) {
+			$seen += $count;
+
+			WP_CLI::log( sprintf( '  %5dw : %10d   %6.1f%%', $w, $count, $seen / $sized * 100 ) );
+
+			if ( $seen / $sized > 0.995 ) {
+				$rest = count( $widths ) - array_search( $w, array_keys( $widths ), true ) - 1;
+
+				if ( $rest > 0 ) {
+					WP_CLI::log( sprintf( '  %d further width(s) make up the last %.1f%%', $rest, 100 - ( $seen / $sized * 100 ) ) );
+				}
+
+				break;
+			}
+		}
+
+		WP_CLI::success( 'Done.' );
+	}
+
 	/** Stops early when cwebp cannot be run, unless the caller only reads. */
 	private function require_binary( bool $tolerate ): void {
 		if ( Mavo_Webp_Files::available() ) {

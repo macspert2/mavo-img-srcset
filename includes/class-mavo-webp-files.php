@@ -337,6 +337,51 @@ final class Mavo_Webp_Files {
 		return $paths;
 	}
 
+/**
+	 * Removes the sidecar when WordPress deletes the file it belongs to.
+	 *
+	 * Hooked to wp_delete_file rather than delete_attachment so that it covers
+	 * every path WordPress removes — the full size, each intermediate, and the
+	 * files discarded when an image is edited or its sizes regenerated.
+	 *
+	 * This did not matter while metadata was empty, because deleting an
+	 * attachment then removed almost nothing. Now that the sizes are recorded,
+	 * every deletion would leave its .webp files behind — exactly the sediment
+	 * that accumulated here over seventeen years.
+	 *
+	 * Only JPEG paths are considered, which is also what stops the filter from
+	 * touching a genuine .webp upload: ours are always <name>.jpg.webp.
+	 */
+	public static function delete_sidecar( $file ) {
+		$path = (string) $file;
+		$ext  = strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
+
+		if ( ! in_array( $ext, [ 'jpg', 'jpeg' ], true ) ) {
+			return $file;
+		}
+
+		$sidecar = self::sidecar( $path );
+
+		// Never step outside the uploads directory, whatever was passed in.
+		if ( self::url_is_local_path( $sidecar ) && file_exists( $sidecar ) ) {
+			@unlink( $sidecar );
+		}
+
+		return $file;
+	}
+
+	/** True when a path lies inside the uploads directory. */
+	private static function url_is_local_path( string $path ): bool {
+		static $basedir = null;
+
+		if ( $basedir === null ) {
+			$uploads = wp_upload_dir();
+			$basedir = ! empty( $uploads['error'] ) ? '' : trailingslashit( (string) ( $uploads['basedir'] ?? '' ) );
+		}
+
+		return $basedir !== '' && str_starts_with( $path, $basedir );
+	}
+
 	/** Total JPEG attachments, for progress reporting. */
 	public static function count_attachments(): int {
 		global $wpdb;

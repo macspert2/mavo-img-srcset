@@ -14,6 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/includes/class-mavo-webp-files.php';
 
+// Deleting an attachment now removes its recorded sizes, so the sidecars have to
+// go with them or every deletion leaves orphans behind.
+add_filter( 'wp_delete_file', [ 'Mavo_Webp_Files', 'delete_sidecar' ] );
+
 // CLI only, so the command class never loads on a web request.
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once __DIR__ . '/includes/class-mavo-webp-cli.php';
