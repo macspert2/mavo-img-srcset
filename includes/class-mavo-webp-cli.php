@@ -322,10 +322,11 @@ final class Mavo_Webp_CLI {
 
 		$c        = [ 'seen' => 0, 'with_orphans' => 0, 'sizes' => 0, 'unchanged' => 0, 'skipped_width' => 0 ];
 		$spread   = [];
-		$seen_w   = [];   // every width found on disk, recorded or not
+		$seen_w   = [];   // width => [ files, files that already have a sidecar ]
+		$years    = [];   // upload year => [ attachments, those already complete ]
 		$listings = [];   // directory => scandir result, reused across neighbours
 
-		$work = static function ( int $id ) use ( &$c, &$spread, &$seen_w, &$listings, $taken, $dry, $widths ): void {
+		$work = static function ( int $id ) use ( &$c, &$spread, &$seen_w, &$years, &$listings, $taken, $dry, $widths ): void {
 			$c['seen']++;
 
 			$file = get_attached_file( $id );
@@ -343,9 +344,23 @@ final class Mavo_Webp_CLI {
 
 			$found = Mavo_Webp_Files::orphan_sizes( $id, $taken, $listings[ $dir ] );
 
+			// uploads/2021/07/... — enough to test whether coverage tracks age.
+			$year = preg_match( '#/(\d{4})/\d{2}$#', $dir, $ym ) ? $ym[1] : 'other';
+
+			$years[ $year ]        = $years[ $year ] ?? [ 0, 0 ];
+			$years[ $year ][0]    += 1;
+
 			foreach ( $found as $key => $size ) {
-				$w            = (int) $size['width'];
-				$seen_w[ $w ] = ( $seen_w[ $w ] ?? 0 ) + 1;
+				$w = (int) $size['width'];
+
+				$seen_w[ $w ] = $seen_w[ $w ] ?? [ 0, 0 ];
+				$seen_w[ $w ][0]++;
+
+				// Does this orphan already have a sidecar? Decides whether adding
+				// the width to the ladder costs a conversion run or nothing.
+				if ( file_exists( Mavo_Webp_Files::sidecar( $dir . '/' . $size['file'] ) ) ) {
+					$seen_w[ $w ][1]++;
+				}
 
 				if ( $widths && ! isset( $widths[ $w ] ) ) {
 					unset( $found[ $key ] );
@@ -355,6 +370,7 @@ final class Mavo_Webp_CLI {
 
 			if ( ! $found ) {
 				$c['unchanged']++;
+				$years[ $year ][1] += 1;
 
 				return;
 			}
@@ -386,12 +402,43 @@ final class Mavo_Webp_CLI {
 			WP_CLI::log( sprintf( '  left unrecorded (--widths)   : %d', $c['skipped_width'] ) );
 		}
 
-		arsort( $seen_w );
+		uasort( $seen_w, static fn( $a, $b ) => $b[0] <=> $a[0] );
 		WP_CLI::log( '' );
-		WP_CLI::log( 'Widths found on disk but absent from metadata:' );
+		WP_CLI::log( 'Widths on disk but absent from metadata (top 25 of ' . count( $seen_w ) . '):' );
+		WP_CLI::log( '  width        files   with .webp' );
 
-		foreach ( $seen_w as $w => $count ) {
-			WP_CLI::log( sprintf( '  %5dw : %7d%s', $w, $count, ( $widths && ! isset( $widths[ $w ] ) ) ? '   (skipped)' : '' ) );
+		$shown = 0;
+		$tail  = [ 0, 0 ];
+
+		foreach ( $seen_w as $w => $pair ) {
+			if ( $shown++ < 25 ) {
+				WP_CLI::log( sprintf(
+					'  %5dw : %8d   %8d  (%3.0f%%)%s',
+					$w,
+					$pair[0],
+					$pair[1],
+					$pair[0] > 0 ? $pair[1] / $pair[0] * 100 : 0,
+					( $widths && ! isset( $widths[ $w ] ) ) ? '  skipped' : ''
+				) );
+
+				continue;
+			}
+
+			$tail[0] += $pair[0];
+			$tail[1] += $pair[1];
+		}
+
+		if ( $tail[0] > 0 ) {
+			WP_CLI::log( sprintf( '  %d further width(s) : %d file(s), %d with a sidecar', count( $seen_w ) - 25, $tail[0], $tail[1] ) );
+		}
+
+		krsort( $years );
+		WP_CLI::log( '' );
+		WP_CLI::log( 'By upload year (does coverage track age?):' );
+		WP_CLI::log( '  year   attachments   already complete' );
+
+		foreach ( $years as $year => $pair ) {
+			WP_CLI::log( sprintf( '  %-6s %11d %14d  (%3.0f%%)', $year, $pair[0], $pair[1], $pair[0] > 0 ? $pair[1] / $pair[0] * 100 : 0 ) );
 		}
 
 		ksort( $spread );
