@@ -39,7 +39,6 @@ class Mavo_Img_Srcset {
 		add_filter( 'the_content',                    [ $this, 'transform' ], 9 );
 		add_filter( 'post_thumbnail_html',            [ $this, 'transform' ], 9 );
 		add_filter( 'wp_get_attachment_image',        [ $this, 'transform' ], 9 );
-		add_filter( 'wp_get_attachment_image_attributes', [ $this, 'add_fetchpriority' ], 10, 2 );
 		add_action( 'wp_enqueue_scripts',             [ $this, 'enqueue_styles' ] );
 		add_filter( 'wp_generate_attachment_metadata', [ $this, 'generate_webp_for_attachment' ], 10, 2 );
 
@@ -64,30 +63,6 @@ class Mavo_Img_Srcset {
 		return $metadata;
 	}
 
-	public function add_fetchpriority( array $attr, $attachment ): array {
-		if ( ! $attachment instanceof WP_Post ) {
-			return $attr;
-		}
-
-		// Ensure sizes is always present when srcset is set.
-		if ( ! empty( $attr['srcset'] ) && empty( $attr['sizes'] ) ) {
-			$attr['sizes'] = self::SIZES;
-		}
-
-		static $count = 0;
-		if ( ! ( is_home() || is_front_page() ) ) {
-			return $attr;
-		}
-		if ( isset( $attr['class'] ) && strpos( $attr['class'], 'wp-post-image' ) !== false ) {
-			$count++;
-			if ( $count === 1 ) {
-				$attr['fetchpriority'] = 'high';
-				$attr['loading']       = 'eager';
-			}
-		}
-		return $attr;
-	}
-
 	public function enqueue_styles(): void {
 		wp_enqueue_style(
 			'mavo-img-srcset',
@@ -100,7 +75,10 @@ class Mavo_Img_Srcset {
 	}
 
 	public function transform( string $content ): string {
-		if ( is_admin() || strpos( $content, '<img' ) === false ) {
+		// Nothing here means anything in a feed: aligncenter, mavo-img-tag and the
+		// <figure> wrapper are all styled by the site's own CSS, which a feed
+		// reader never loads. Skipping also avoids parsing every item's body.
+		if ( is_admin() || is_feed() || strpos( $content, '<img' ) === false ) {
 			return $content;
 		}
 		try {
@@ -139,10 +117,8 @@ class Mavo_Img_Srcset {
 		}
 		$img_list = array_reverse( $img_list );
 
-		$post_id = (int) get_the_ID();
-
 		foreach ( $img_list as $img ) {
-			$this->process_img( $img, $doc, $post_id );
+			$this->process_img( $img, $doc );
 		}
 
 		// Serialize only mavo-root's children to avoid the wrapper div.
@@ -158,18 +134,45 @@ class Mavo_Img_Srcset {
 		return $html;
 	}
 
-	private function get_fallback_alt( int $post_id ): string {
+	/**
+	 * The attachment ID WordPress wrote into the image's class, or 0.
+	 *
+	 * The editor puts wp-image-NNN on every image it inserts; roughly 95% of the
+	 * content images on this site carry one.
+	 */
+	private function attachment_id_from_class( string $class ): int {
+		return preg_match( '/\bwp-image-(\d+)\b/', $class, $m ) ? (int) $m[1] : 0;
+	}
+
+	/**
+	 * The alt text stored against the attachment itself, or '' if there is none.
+	 *
+	 * This replaces a fallback that used the post's Yoast focus keyword. That
+	 * keyword is one string per post, so every un-alted image in an article was
+	 * given the same text: measured across 62 pages, 1620 of 2295 content images
+	 * — 71% — shared their alt with another image on the same page. For someone
+	 * using a screen reader that is a dozen images all announcing "week-end à
+	 * Paris en famille"; to a search engine it is the textbook description of
+	 * keyword-stuffed alt text. It also meant querying a third-party plugin's
+	 * private table on the front end.
+	 *
+	 * Where the media library has no alt either, the attribute is left empty on
+	 * purpose. alt="" is the correct markup for an image with nothing useful to
+	 * say about it: assistive technology skips it, which is better than reading
+	 * out a keyword.
+	 */
+	private function media_alt( int $attachment_id ): string {
 		static $cache = [];
-		if ( array_key_exists( $post_id, $cache ) ) {
-			return $cache[ $post_id ];
+
+		if ( $attachment_id < 1 ) {
+			return '';
 		}
-		global $wpdb;
-		$keyword = $wpdb->get_var( $wpdb->prepare(
-			"SELECT primary_focus_keyword FROM {$wpdb->prefix}yoast_indexable WHERE object_id = %d LIMIT 1",
-			$post_id
-		) );
-		$cache[ $post_id ] = $keyword !== null ? (string) $keyword : '';
-		return $cache[ $post_id ];
+
+		if ( ! array_key_exists( $attachment_id, $cache ) ) {
+			$cache[ $attachment_id ] = trim( (string) get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) );
+		}
+
+		return $cache[ $attachment_id ];
 	}
 
 	/**
@@ -192,13 +195,18 @@ class Mavo_Img_Srcset {
 	 * The element is now modified in place rather than rebuilt, so every
 	 * attribute this method does not name survives untouched.
 	 */
-	private function process_img( DOMElement $img, DOMDocument $doc, int $post_id ): void {
-		// --- Skip conditions (deliberately identical to the previous version) ---
-
-		$width_attr = $img->getAttribute( 'width' );
-		if ( $width_attr === '' || (int) $width_attr < 960 ) {
-			return;
-		}
+	private function process_img( DOMElement $img, DOMDocument $doc ): void {
+		// --- Skip conditions ---
+		//
+		// The width test used to sit here and gate everything, which is why an
+		// image narrower than the content column got no caption and no alignment
+		// class. It was never meant to: it existed because the responsive layer
+		// below it needed dimensions to derive filenames from. That layer is gone,
+		// so the test now guards only the part that actually depends on width.
+		// Measured cost of the old placement: 14 <em> captions across 62 pages
+		// silently left as italic text. Nothing was protected in exchange — the
+		// site uses aligncenter throughout and has no alignleft or alignright for
+		// the normalisation to trample.
 
 		$src = $img->getAttribute( 'src' );
 		if ( $src === '' ) {
@@ -214,10 +222,14 @@ class Mavo_Img_Srcset {
 			return;
 		}
 
-		// --- Alt fallback ---
+		// --- Alt: the media library's own, never an invented one ---
 
-		if ( $img->getAttribute( 'alt' ) === '' && $post_id > 0 ) {
-			$img->setAttribute( 'alt', $this->get_fallback_alt( $post_id ) );
+		if ( trim( $img->getAttribute( 'alt' ) ) === '' ) {
+			$alt = $this->media_alt( $this->attachment_id_from_class( $img->getAttribute( 'class' ) ) );
+
+			if ( $alt !== '' ) {
+				$img->setAttribute( 'alt', $alt );
+			}
 		}
 
 		// --- Alignment classes: strip whatever was chosen, centre everything ---
@@ -227,18 +239,26 @@ class Mavo_Img_Srcset {
 		$img->setAttribute( 'class', trim( $class . ' aligncenter mavo-img-tag' ) );
 
 		// --- Display dimensions ---
-		// Still normalised to the 960px content column. These are layout hints,
-		// not filenames: being a pixel out costs nothing, which is why this
-		// arithmetic is safe to keep while the arithmetic that named files was not.
+		//
+		// Only for images at least as wide as the content column. Forcing 960 on a
+		// narrower one would ask the browser to upscale it, so a small image keeps
+		// the dimensions the editor gave it and simply sits centred.
+		//
+		// These are layout hints rather than filenames: a pixel out costs nothing,
+		// which is why this arithmetic is safe where the arithmetic that named
+		// files was not.
 
+		$width_attr  = $img->getAttribute( 'width' );
 		$orig_width  = (int) $width_attr;
 		$orig_height = (int) $img->getAttribute( 'height' );
 
-		if ( $orig_width > 0 && $orig_height > 0 ) {
-			$img->setAttribute( 'height', (string) (int) round( 960 * $orig_height / $orig_width ) );
-		}
+		if ( $width_attr !== '' && $orig_width >= 960 ) {
+			if ( $orig_height > 0 ) {
+				$img->setAttribute( 'height', (string) (int) round( 960 * $orig_height / $orig_width ) );
+			}
 
-		$img->setAttribute( 'width', '960' );
+			$img->setAttribute( 'width', '960' );
+		}
 
 		// --- Anchor: a centred <p> wrapper is dropped, the image replaces it ---
 

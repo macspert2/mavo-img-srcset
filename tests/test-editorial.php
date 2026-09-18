@@ -13,19 +13,14 @@ function add_action( ...$a ) {}
 function apply_filters( $n, $v ) { return $v; }
 function plugin_dir_url( $f )  { return '/p/'; }
 function plugin_dir_path( $f ) { return __DIR__ . '/'; }
-function is_admin()  { return false; }
-function get_the_ID() { return $GLOBALS['POST_ID'] ?? 0; }
+function is_admin() { return false; }
+function is_feed()  { return $GLOBALS['IS_FEED'] ?? false; }
+function get_post_meta( $id, $key, $single = false ) { return $GLOBALS['MEDIA_ALT'][ $id ] ?? ''; }
 function set_url_scheme( $u, $s ) { return preg_replace( '#^https?:#', $s . ':', $u ); }
 function wp_upload_dir() { return [ 'baseurl' => 'https://example.com/wp-content/uploads', 'basedir' => '/nonexistent', 'error' => false ]; }
 
-/** Stands in for the Yoast indexable table. */
-class Fake_Wpdb {
-	public $prefix = 'wp_';
-	public function prepare( $q, ...$a ) { return $q; }
-	public function get_var( $q ) { return $GLOBALS['KEYWORD'] ?? null; }
-}
-$GLOBALS['wpdb']    = new Fake_Wpdb();
-$GLOBALS['POST_ID'] = 0;
+$GLOBALS['MEDIA_ALT'] = [];   // attachment id => alt stored in the media library
+$GLOBALS['IS_FEED']   = false;
 
 require_once __DIR__ . '/../mavo-img-srcset.php';
 
@@ -86,18 +81,27 @@ ok( ! str_contains( $out, '<p style' ), 'and the wrapper still goes' );
 $out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="x"> <strong>not a caption</strong>' );
 ok( ! str_contains( $out, 'figure' ), 'a following element that is not <em> does not make a figure' );
 
-/* ---- alt fallback -------------------------------------------------------- */
-$GLOBALS['POST_ID'] = 5;
-$GLOBALS['KEYWORD'] = 'londres en famille';
-ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="">' ), 'alt="londres en famille"' ),
-	'an empty alt falls back to the focus keyword' );
-ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="real">' ), 'alt="real"' ),
-	'a real alt is never overwritten' );
-$GLOBALS['POST_ID'] = 0;
+/* ---- alt comes from the media library, never invented -------------------- */
+$GLOBALS['MEDIA_ALT'] = [ 7 => 'Le Lac Noir, Durmitor' ];
+
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-7">' ), 'alt="Le Lac Noir, Durmitor"' ),
+	'an empty alt is filled from the attachment\'s own alt text' );
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="real" class="wp-image-7">' ), 'alt="real"' ),
+	'an alt already in the content is never overwritten' );
+ok( str_contains( t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="   " class="wp-image-7">' ), 'alt="Le Lac Noir, Durmitor"' ),
+	'a whitespace-only alt counts as empty' );
+
+$out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="" class="wp-image-99">' );
+ok( str_contains( $out, 'alt=""' ), 'no media alt -> alt stays empty, which is correct for a decorative image' );
+ok( ! str_contains( $out, 'wp-image-99"' ) || ! preg_match( '/alt="[^"]+"/', $out ),
+	'nothing is invented to fill the gap' );
+
+$out = t( '<img src="' . $U . '/a.jpg" width="960" height="720" alt="">' );
+ok( str_contains( $out, 'alt=""' ), 'an image with no wp-image class keeps an empty alt' );
+$GLOBALS['MEDIA_ALT'] = [];
 
 /* ---- skip conditions, unchanged ------------------------------------------ */
 foreach ( [
-	[ '<img src="' . $U . '/a.jpg" width="600" height="400">', 'under 960 wide' ],
 	[ '<img src="' . $U . '/a.png" width="960" height="720">', 'not a JPEG' ],
 	[ '<img src="' . $U . '/a.jpg?x=1" width="960" height="720">', 'carries a query string' ],
 	[ '<img src="https://i0.wp.com/a.jpg" width="960" height="720">', 'a Photon URL' ],
@@ -105,6 +109,27 @@ foreach ( [
 ] as [ $html, $why ] ) {
 	ok( ! str_contains( t( $html ), 'mavo-img-tag' ), "skipped: $why" );
 }
+
+/* ---- narrow images: styled, but never upscaled -------------------------- */
+$out = t( '<img src="' . $U . '/small.jpg" width="600" height="400" class="alignleft"> <em>Caption</em>' );
+ok( str_contains( $out, 'mavo-img-tag' ), 'an image narrower than the column is now styled' );
+ok( str_contains( $out, '<figcaption>Caption</figcaption>' ), '...and gets its caption — this is the case the old gate silently dropped' );
+ok( str_contains( $out, 'width="600"' ), '...but keeps its own width, so the browser is not asked to upscale it' );
+ok( str_contains( $out, 'height="400"' ), '...and its own height' );
+
+$out = t( '<img src="' . $U . '/nodims.jpg"> <em>Caption</em>' );
+ok( str_contains( $out, '<figcaption>Caption</figcaption>' ), 'an image with no dimensions at all still gets its caption' );
+ok( ! str_contains( $out, 'width="960"' ), '...and gains no invented width' );
+
+$out = t( '<img src="' . $U . '/big.jpg" width="1280" height="960">' );
+ok( str_contains( $out, 'width="960"' ), 'an image at least as wide as the column is still normalised' );
+ok( str_contains( $out, 'height="720"' ), '...with a scaled height' );
+
+/* ---- feeds --------------------------------------------------------------- */
+$GLOBALS['IS_FEED'] = true;
+$feed = '<img src="' . $U . '/a.jpg" width="960" height="720" alt="x"> <em>Cap</em>';
+is_same( $feed, ( new Mavo_Img_Srcset() )->transform( $feed ), 'feeds are left completely alone' );
+$GLOBALS['IS_FEED'] = false;
 
 /* ---- content without images is returned untouched ------------------------ */
 is_same( '<p>Hello</p>', t( '<p>Hello</p>' ), 'content with no <img> is passed straight through' );
