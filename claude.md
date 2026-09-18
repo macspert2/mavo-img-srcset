@@ -10,6 +10,29 @@ WordPress plugin that converts simple `<img>` tags with jpgs into responsive `<i
 |------|---------|
 | `mavo-img-srcset.php` | Plugin logic |
 | `mavo-img-srcset.css` | Layout styles for `<img>` and `<figure>` |
+| `includes/class-mavo-webp-files.php` | Creates and locates the `.webp` sidecars |
+| `includes/class-mavo-webp-cli.php` | `wp mavo-webp` commands (WP-CLI only) |
+| `tests/run.sh` | Both suites; no WordPress needed |
+
+## WebP sidecars
+
+This plugin is the only thing on the site that creates `.webp` files. The naming
+is an appended extension — `photo-640x480.jpg.webp` — not WordPress's own
+`photo-640x480.webp`; tens of thousands of files use it, so it stays.
+
+Nothing re-creates a sidecar after the upload that triggered it, so regenerating
+thumbnails, adding an image size or restoring a backup will strand images on
+JPEG. That is what the CLI is for:
+
+```
+wp mavo-webp status                 # how many sidecars are current / stale / missing
+wp mavo-webp sizes                  # what WordPress recorded as intermediate sizes
+wp mavo-webp backfill [--dry-run] [--force] [--attachment=<id>] [--limit=<n>]
+```
+
+`backfill` is resumable and idempotent; a second run costs stat calls only. A
+WebP that is not smaller than its JPEG is discarded rather than written, so the
+renderer falls back to the JPEG, which is the cheaper file.
 
 ---
 

@@ -158,6 +158,113 @@ final class Mavo_Webp_CLI {
 		WP_CLI::success( $dry ? 'Dry run complete; nothing was written.' : 'Backfill complete.' );
 	}
 
+
+	/**
+	 * Reports what WordPress recorded as intermediate sizes.
+	 *
+	 * wp_calculate_image_srcset() builds a srcset purely from
+	 * _wp_attachment_metadata['sizes']; an attachment with fewer than two usable
+	 * entries there can never get a responsive srcset from core, however many
+	 * resized files happen to sit on disk. This counts how much of the library is
+	 * in that position, because it decides whether core can be relied on for the
+	 * responsive layer at all.
+	 *
+	 * Reads only.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--limit=<n>]
+	 * : Stop after examining this many attachments.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp mavo-webp sizes
+	 */
+	public function sizes( $args, $assoc ): void {
+		$limit = isset( $assoc['limit'] ) ? max( 1, (int) $assoc['limit'] ) : PHP_INT_MAX;
+
+		$c      = [ 'total' => 0, 'no_file' => 0, 'no_meta' => 0, 'recorded' => 0, 'on_disk' => 0, 'usable' => 0 ];
+		$spread = [];
+		$widths = [];
+
+		$this->each_attachment( $limit, static function ( int $id ) use ( &$c, &$spread, &$widths ): void {
+			$c['total']++;
+
+			$file = get_attached_file( $id );
+
+			if ( ! $file || ! file_exists( $file ) ) {
+				$c['no_file']++;
+
+				return;
+			}
+
+			$meta = wp_get_attachment_metadata( $id );
+
+			if ( ! is_array( $meta ) || empty( $meta['sizes'] ) || ! is_array( $meta['sizes'] ) ) {
+				$c['no_meta']++;
+				$spread[0] = ( $spread[0] ?? 0 ) + 1;
+
+				return;
+			}
+
+			$dir     = dirname( $file );
+			$present = 0;
+
+			foreach ( $meta['sizes'] as $size ) {
+				$c['recorded']++;
+
+				if ( empty( $size['file'] ) || ! file_exists( $dir . '/' . $size['file'] ) ) {
+					continue;
+				}
+
+				$c['on_disk']++;
+				$present++;
+
+				$w = (int) ( $size['width'] ?? 0 );
+
+				if ( $w > 0 ) {
+					$widths[ $w ] = ( $widths[ $w ] ?? 0 ) + 1;
+				}
+			}
+
+			$spread[ $present ] = ( $spread[ $present ] ?? 0 ) + 1;
+
+			// Core needs the full size plus at least one intermediate to be useful.
+			if ( $present >= 1 ) {
+				$c['usable']++;
+			}
+		} );
+
+		$pct = static fn( int $n ) => $c['total'] > 0 ? sprintf( '%5.1f%%', $n / $c['total'] * 100 ) : '    —';
+
+		WP_CLI::log( '' );
+		WP_CLI::log( sprintf( 'Attachments examined            : %d', $c['total'] ) );
+		WP_CLI::log( sprintf( '  full-size file missing        : %6d  %s', $c['no_file'], $pct( $c['no_file'] ) ) );
+		WP_CLI::log( sprintf( '  no sizes in metadata          : %6d  %s', $c['no_meta'], $pct( $c['no_meta'] ) ) );
+		WP_CLI::log( sprintf( '  core CAN build a srcset       : %6d  %s', $c['usable'], $pct( $c['usable'] ) ) );
+		WP_CLI::log( '' );
+		WP_CLI::log( sprintf( 'Sizes recorded in metadata      : %d', $c['recorded'] ) );
+		WP_CLI::log( sprintf( '  of those, present on disk     : %d', $c['on_disk'] ) );
+
+		ksort( $spread );
+		WP_CLI::log( '' );
+		WP_CLI::log( 'Intermediates per attachment (present on disk):' );
+
+		foreach ( $spread as $n => $count ) {
+			WP_CLI::log( sprintf( '  %2d intermediate(s) : %6d  %s', $n, $count, $pct( $count ) ) );
+		}
+
+		arsort( $widths );
+		WP_CLI::log( '' );
+		WP_CLI::log( 'Most common recorded widths:' );
+
+		foreach ( array_slice( $widths, 0, 12, true ) as $w => $count ) {
+			WP_CLI::log( sprintf( '  %5dw : %6d', $w, $count ) );
+		}
+
+		WP_CLI::success( 'Done.' );
+	}
+
 	/** Stops early when cwebp cannot be run, unless the caller only reads. */
 	private function require_binary( bool $tolerate ): void {
 		if ( Mavo_Webp_Files::available() ) {
@@ -198,6 +305,9 @@ final class Mavo_Webp_CLI {
 			if ( ! $ids ) {
 				break;
 			}
+
+			// One query for the batch instead of one per attachment.
+			update_meta_cache( 'post', $ids );
 
 			foreach ( $ids as $id ) {
 				$callback( $id );
