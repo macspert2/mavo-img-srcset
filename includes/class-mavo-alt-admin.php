@@ -50,6 +50,10 @@ final class Mavo_Alt_Admin {
 			$args['post'] = $post_id;
 		}
 
+		if ( self::list_language() === '' && function_exists( 'pll_languages_list' ) ) {
+			$args['lang'] = 'all';
+		}
+
 		return add_query_arg( $args, admin_url( 'tools.php' ) );
 	}
 
@@ -65,8 +69,27 @@ final class Mavo_Alt_Admin {
 	 *
 	 * @return array<int,object{ID:int,post_title:string,views:int,reviewed:string}>
 	 */
-	private static function posts(): array {
+	private static function posts( string $lang = '' ): array {
 		global $wpdb;
+
+		$join = '';
+		$args = [ self::META_VIEWS, self::META_REVIEWED ];
+
+		if ( $lang !== '' ) {
+			// Polylang stores a post's language as a term in the 'language'
+			// taxonomy, keyed on the post ID like any normal taxonomy. (Its
+			// *term* languages are the awkward case — object_id there is a
+			// term_taxonomy_id — but that does not apply to posts.)
+			//
+			// One join rather than pll_get_post_language() per row: this list is
+			// every post on the site that contains an image.
+			$join = "INNER JOIN {$wpdb->term_relationships} lr ON lr.object_id = p.ID
+			         INNER JOIN {$wpdb->term_taxonomy} lt ON lt.term_taxonomy_id = lr.term_taxonomy_id AND lt.taxonomy = 'language'
+			         INNER JOIN {$wpdb->terms} lg ON lg.term_id = lt.term_id AND lg.slug = %s";
+			$args[] = $lang;
+		}
+
+		$args[] = '%<img%';
 
 		$rows = $wpdb->get_results( $wpdb->prepare(
 			"SELECT p.ID,
@@ -76,16 +99,36 @@ final class Mavo_Alt_Admin {
 			   FROM {$wpdb->posts} p
 			   LEFT JOIN {$wpdb->postmeta} v ON v.post_id = p.ID AND v.meta_key = %s
 			   LEFT JOIN {$wpdb->postmeta} r ON r.post_id = p.ID AND r.meta_key = %s
+			   {$join}
 			  WHERE p.post_type IN ( 'post', 'page' )
 			    AND p.post_status = 'publish'
 			    AND p.post_content LIKE %s
 			  ORDER BY ( r.meta_value IS NULL ) ASC, views DESC, p.ID DESC",
-			self::META_VIEWS,
-			self::META_REVIEWED,
-			'%<img%'
+			...$args
 		) );
 
 		return is_array( $rows ) ? $rows : [];
+	}
+
+	/**
+	 * Which language's posts to list.
+	 *
+	 * The default only, because alt text is stored on the attachment and the
+	 * translations of a post use the same attachments — so every language's text
+	 * is editable from the French copy, and listing the other two would be the
+	 * same images again under different titles.
+	 *
+	 * Two things that misses, which is what ?lang=all is for: a translation that
+	 * uses an image its French counterpart does not, and a post that exists only
+	 * in English or German.
+	 */
+	private static function list_language(): string {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- navigation only.
+		if ( isset( $_GET['lang'] ) && $_GET['lang'] === 'all' ) {
+			return '';
+		}
+
+		return function_exists( 'pll_languages_list' ) ? self::default_language() : '';
 	}
 
 	/* ----------------------------------------------------------- the images */
@@ -367,11 +410,30 @@ final class Mavo_Alt_Admin {
 			wp_die( esc_html__( 'You are not allowed to edit posts.', 'mavo-img-srcset' ) );
 		}
 
-		$posts = self::posts();
+		$lang  = self::list_language();
+		$posts = self::posts( $lang );
 
 		if ( ! $posts ) {
-			echo '<div class="wrap"><h1>' . esc_html__( 'Image alt text', 'mavo-img-srcset' ) . '</h1>'
-				. '<p>' . esc_html__( 'No published posts contain images.', 'mavo-img-srcset' ) . '</p></div>';
+			echo '<div class="wrap"><h1>' . esc_html__( 'Image alt text', 'mavo-img-srcset' ) . '</h1><p>';
+
+			if ( $lang !== '' ) {
+				// Distinguish "nothing to do" from "the language filter matched
+				// nothing", which would otherwise look identical.
+				printf(
+					/* translators: %s: language code */
+					esc_html__( 'No published %s posts contain images.', 'mavo-img-srcset' ),
+					esc_html( strtoupper( $lang ) )
+				);
+				printf(
+					' <a href="%s">%s</a>',
+					esc_url( add_query_arg( [ 'page' => self::PAGE_SLUG, 'lang' => 'all' ], admin_url( 'tools.php' ) ) ),
+					esc_html__( 'Show every language', 'mavo-img-srcset' )
+				);
+			} else {
+				esc_html_e( 'No published posts contain images.', 'mavo-img-srcset' );
+			}
+
+			echo '</p></div>';
 
 			return;
 		}
@@ -400,11 +462,37 @@ final class Mavo_Alt_Admin {
 				<?php
 				printf(
 					/* translators: 1: reviewed count, 2: total */
-					esc_html__( '%1$d of %2$d posts reviewed. Alt text is saved to the media library, so an image used in several posts shares one description.', 'mavo-img-srcset' ),
+					esc_html__( '%1$d of %2$d posts reviewed. Alt text is saved against the image, so every translation of a post shares it.', 'mavo-img-srcset' ),
 					(int) $done,
 					count( $posts )
 				);
 				?>
+
+				<?php if ( function_exists( 'pll_languages_list' ) ) : ?>
+					<?php if ( $lang !== '' ) : ?>
+						<?php
+						printf(
+							/* translators: %s: language code */
+							esc_html__( 'Listing %s posts only, since their translations use the same images.', 'mavo-img-srcset' ),
+							esc_html( strtoupper( $lang ) )
+						);
+						?>
+						<a href="<?php echo esc_url( add_query_arg( [ 'page' => self::PAGE_SLUG, 'lang' => 'all' ], admin_url( 'tools.php' ) ) ); ?>">
+							<?php esc_html_e( 'Show every language', 'mavo-img-srcset' ); ?>
+						</a>
+					<?php else : ?>
+						<?php esc_html_e( 'Listing every language.', 'mavo-img-srcset' ); ?>
+						<a href="<?php echo esc_url( add_query_arg( [ 'page' => self::PAGE_SLUG ], admin_url( 'tools.php' ) ) ); ?>">
+							<?php
+							printf(
+								/* translators: %s: language code */
+								esc_html__( 'Show %s only', 'mavo-img-srcset' ),
+								esc_html( strtoupper( self::default_language() ) )
+							);
+							?>
+						</a>
+					<?php endif; ?>
+				<?php endif; ?>
 			</p>
 
 			<?php self::render_strip( $posts, $current ); ?>
@@ -659,7 +747,7 @@ final class Mavo_Alt_Admin {
 
 		update_post_meta( $post_id, self::META_REVIEWED, (string) time() );
 
-		$next = self::next_untreated( self::posts(), $post_id );
+		$next = self::next_untreated( self::posts( self::list_language() ), $post_id );
 
 		wp_safe_redirect( add_query_arg(
 			[ 'saved' => $saved ],
